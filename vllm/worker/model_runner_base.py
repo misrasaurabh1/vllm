@@ -3,14 +3,17 @@
 
 import dataclasses
 from abc import ABC, abstractmethod
+from dataclasses import fields
 from typing import (TYPE_CHECKING, Any, Dict, Generic, List, Optional, Type,
                     TypeVar)
 
 import torch
 import torch.nn as nn
 
+from vllm.attention.backends.abstract import AttentionBackend
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
+from vllm.model_executor import SamplingMetadata
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.sequence import IntermediateTensors, SequenceGroupMetadata
 
@@ -21,12 +24,12 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-T = TypeVar('T', bound="BroadcastableModelInput")
+T = TypeVar("T", bound="BroadcastableModelInput")
 
 
 def _add_attn_metadata_broadcastable_dict(
-        tensor_dict: Dict[str, Any],
-        attn_metadata: Optional["AttentionMetadata"]) -> None:
+    tensor_dict: Dict[str, Any], attn_metadata: Optional["AttentionMetadata"]
+) -> None:
     """
     Helper method to update tensor_dict with broadcastable
     AttentionMetadata fields.
@@ -43,28 +46,27 @@ def _init_attn_metadata_from_tensor_dict(
     Helper method to initialize AttentionMetadata based on an
     AttentionBackend and broadcastable AttentionMetadata fields.
     """
-    # Extract the fields used to create AttentionMetadata.
+    metadata_cls = attn_backend.get_metadata_cls()
+    attn_fields = {f.name for f in fields(metadata_cls)}
+    # Using a dictionary comprehension for fast filtering and pop
     valid_attn_kwargs = {}
-    for field in dataclasses.fields(attn_backend.get_metadata_cls()):
-        if field.name in tensor_dict:
-            if field.name == "input_positions":
-                valid_attn_kwargs[field.name] = tensor_dict[field.name]
-            else:
-                valid_attn_kwargs[field.name] = tensor_dict.pop(field.name)
-
+    for name in list(attn_fields & tensor_dict.keys()):
+        if name == "input_positions":
+            valid_attn_kwargs[name] = tensor_dict[name]
+        else:
+            valid_attn_kwargs[name] = tensor_dict.pop(name)
     attn_metadata = attn_backend.make_metadata(**valid_attn_kwargs)
     tensor_dict["attn_metadata"] = attn_metadata
     return tensor_dict
 
 
 def _init_sampling_metadata_from_tensor_dict(  # type: ignore
-        tensor_dict: Dict[str, Any]) -> Dict[str, Any]:
+    tensor_dict: Dict[str, Any],
+) -> Dict[str, Any]:
     """
     Helper method to initialize SamplingMetadata based on broadcastable
     SamplingMetadata fields.
     """
-    from vllm.model_executor import SamplingMetadata
-
     selected_token_indices = tensor_dict.pop("selected_token_indices", None)
     # An empty SamplingMetadata to signal that the worker should skip
     # sampling.
@@ -79,20 +81,22 @@ def _init_sampling_metadata_from_tensor_dict(  # type: ignore
 
 
 def _add_sampling_metadata_broadcastable_dict(
-        tensor_dict: Dict[str, Any],
-        sampling_metadata: Optional["SamplingMetadata"]) -> None:
+    tensor_dict: Dict[str, Any], sampling_metadata: Optional["SamplingMetadata"]
+) -> None:
     """
     Helper method to update tensor_dict with broadcastable
     SamplingMetadata fields.
     """
     if sampling_metadata is not None:
         tensor_dict["selected_token_indices"] = (
-            sampling_metadata.selected_token_indices)
+            sampling_metadata.selected_token_indices
+        )
 
 
 def _init_frozen_model_input_from_tensor_dict(
-        frozen_model_input_cls: Type["ModelRunnerInputBase"],
-        tensor_dict: Dict[str, Any]) -> Dict[str, Any]:
+    frozen_model_input_cls: Type["ModelRunnerInputBase"],
+    tensor_dict: Dict[str, Any],
+) -> Dict[str, Any]:
     """
     Helper method to initialize a frozen ModelInput based on broadcastable
     """
@@ -108,7 +112,6 @@ def _init_frozen_model_input_from_tensor_dict(
 
 
 class BroadcastableModelInput(ABC):
-
     @abstractmethod
     def as_broadcastable_tensor_dict(self) -> Dict[str, Any]:
         """
@@ -142,16 +145,17 @@ class ModelRunnerInputBase(BroadcastableModelInput):
     ModelRunnerInputBase subclass, add their required fields, and specify how to
     serialize/deserialize a ModelInput for broadcast between workers.
     """
+
     pass
 
 
 class ModelRunnerInputBuilderBase(ABC, Generic[T]):
-    """A builder to create ModelRunnerInputBase objects.
-  """
+    """A builder to create ModelRunnerInputBase objects."""
 
     @abstractmethod
-    def prepare(self,
-                finished_requests_ids: Optional[List[str]] = None) -> None:
+    def prepare(
+        self, finished_requests_ids: Optional[List[str]] = None
+    ) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -278,5 +282,7 @@ class InputProcessingError(Exception):
         super().__init__(self.message)
 
     def __str__(self):
-        return "Failed to prepare inputs for sequence group with request id: " \
-                f"{self.request_id}, Error: {self.message}"
+        return (
+            "Failed to prepare inputs for sequence group with request id: "
+            f"{self.request_id}, Error: {self.message}"
+        )
