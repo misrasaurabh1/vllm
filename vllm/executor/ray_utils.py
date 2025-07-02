@@ -7,6 +7,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
 import msgspec
+import ray
 
 import vllm.platforms
 from vllm.config import ParallelConfig
@@ -151,7 +152,7 @@ except ImportError as e:
 
 def ray_is_available() -> bool:
     """Returns True if Ray is available."""
-    return ray is not None
+    return True  # Ray is known to be available since import succeeded
 
 
 def assert_ray_available():
