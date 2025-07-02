@@ -7,9 +7,8 @@ from .tokenizer import AnyTokenizer
 
 
 def _replace_none_with_empty(tokens: list[Optional[str]]):
-    for i, token in enumerate(tokens):
-        if token is None:
-            tokens[i] = ""
+    # Direct list comprehension is faster and avoids in-place mutation.
+    return [token if token is not None else "" for token in tokens]
 
 
 def _convert_tokens_to_string_with_added_encoders(
@@ -62,16 +61,17 @@ def convert_prompt_ids_to_tokens(
     Note that not all tokens are converted to strings. Only the tokens that
     are necessary for incremental detokenization are converted to strings.
     """
-    # We do not need to convert the whole prompt to tokens.
-    # Offset a little more in case we have special tokens.
+    # Calculate slice once for efficiency
+    needed_slice = prompt_ids[-INITIAL_INCREMENTAL_DETOKENIZATION_OFFSET - 2 :]
     new_tokens = tokenizer.convert_ids_to_tokens(
-        prompt_ids[-INITIAL_INCREMENTAL_DETOKENIZATION_OFFSET - 2:],
-        skip_special_tokens=skip_special_tokens)
+        needed_slice, skip_special_tokens=skip_special_tokens
+    )
     read_offset = len(new_tokens)
-    prefix_offset = max(
-        read_offset - INITIAL_INCREMENTAL_DETOKENIZATION_OFFSET, 0)
-    # This is required to guard against out-of-vocab prompt token ids
-    _replace_none_with_empty(new_tokens)  # type: ignore[arg-type]
+    prefix_offset = read_offset - INITIAL_INCREMENTAL_DETOKENIZATION_OFFSET
+    if prefix_offset < 0:
+        prefix_offset = 0
+    # Quickly handle out-of-vocab/None
+    new_tokens = _replace_none_with_empty(new_tokens)
     return new_tokens, prefix_offset, read_offset
 
 
@@ -87,7 +87,7 @@ def convert_ids_list_to_tokens(
 
     Returns:
       Python list of token string representations
-    
+
     """
     token_str_lst = tokenizer.convert_ids_to_tokens(token_ids)
     _replace_none_with_empty(token_str_lst)  # type: ignore
@@ -134,18 +134,21 @@ def detokenize_incrementally(
     # This is the first iteration for this sequence
     is_first_iter = prev_tokens is None
     if is_first_iter:
-        (prev_tokens, prefix_offset,
-         read_offset) = convert_prompt_ids_to_tokens(
-             tokenizer,
-             all_input_ids[:-1],
-             skip_special_tokens=skip_special_tokens)
+        (prev_tokens, prefix_offset, read_offset) = (
+            convert_prompt_ids_to_tokens(
+                tokenizer,
+                all_input_ids[:-1],
+                skip_special_tokens=skip_special_tokens,
+            )
+        )
     assert prev_tokens is not None
 
     # If the new token id is out of bounds, return an empty string.
     if 0 <= new_token_id < len(tokenizer):
         # Put new_token_id in a list so skip_special_tokens is respected
         new_tokens = tokenizer.convert_ids_to_tokens(
-            [new_token_id], skip_special_tokens=skip_special_tokens)
+            [new_token_id], skip_special_tokens=skip_special_tokens
+        )
         if isinstance(new_tokens, str):
             new_tokens = [new_tokens]
     else:
@@ -161,9 +164,11 @@ def detokenize_incrementally(
     # surrounding ids.
     if tokenizer.is_fast or not tokenizer.get_added_vocab():
         prefix_text = tokenizer.convert_tokens_to_string(
-            output_tokens[prefix_offset:read_offset])
+            output_tokens[prefix_offset:read_offset]
+        )
         new_text = tokenizer.convert_tokens_to_string(
-            output_tokens[prefix_offset:])
+            output_tokens[prefix_offset:]
+        )
     else:
         prefix_text = _convert_tokens_to_string_with_added_encoders(
             tokenizer,
@@ -185,5 +190,5 @@ def detokenize_incrementally(
         # by the model
         return new_tokens, "", prefix_offset, read_offset
 
-    new_text = new_text[len(prefix_text):]
+    new_text = new_text[len(prefix_text) :]
     return new_tokens, new_text, read_offset, len(output_tokens)
