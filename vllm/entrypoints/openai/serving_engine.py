@@ -17,6 +17,7 @@ from fastapi import Request
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import Headers
 from typing_extensions import TypeIs
+from vllm.sequence import PromptLogprobs
 
 if sys.version_info >= (3, 12):
     from typing import TypedDict
@@ -976,13 +977,24 @@ class OpenAIServing:
 def clamp_prompt_logprobs(
     prompt_logprobs: Union[PromptLogprobs,
                            None]) -> Union[PromptLogprobs, None]:
+    # Fast-path out if input is None
     if prompt_logprobs is None:
         return prompt_logprobs
 
+    MIN_LOGPROB = float('-inf')
+    CLAMPED_LOGPROB = -9999.0
+
+    # Optimize by reducing attribute and function call overhead,
+    # replacing values in-place only if needed.
     for logprob_dict in prompt_logprobs:
         if logprob_dict is None:
             continue
-        for logprob_values in logprob_dict.values():
-            if logprob_values.logprob == float('-inf'):
-                logprob_values.logprob = -9999.0
+        values = logprob_dict.values()
+        # Only enter loop if there is at least one value to avoid function call cost
+        for logprob_values in values:
+            curr = logprob_values.logprob
+            if curr is MIN_LOGPROB:
+                # Assign only if clamping needed
+                logprob_values.logprob = CLAMPED_LOGPROB
+
     return prompt_logprobs
