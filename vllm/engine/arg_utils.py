@@ -101,11 +101,12 @@ def nullable_kvs(val: str) -> dict[str, int]:
     """
     out_dict: dict[str, int] = {}
     for item in val.split(","):
-        kv_parts = [part.lower().strip() for part in item.split("=")]
-        if len(kv_parts) != 2:
+        key, sep, value = item.partition("=")
+        if not sep:
             raise argparse.ArgumentTypeError(
                 "Each item should be in the form KEY=VALUE")
-        key, value = kv_parts
+        key = key.lower().strip()
+        value = value.strip()  # Only stripping whitespace for value
 
         try:
             parsed_value = int(value)
@@ -113,10 +114,13 @@ def nullable_kvs(val: str) -> dict[str, int]:
             msg = f"Failed to parse value of item {key}={value}"
             raise argparse.ArgumentTypeError(msg) from exc
 
-        if key in out_dict and out_dict[key] != parsed_value:
-            raise argparse.ArgumentTypeError(
-                f"Conflicting values specified for key: {key}")
-        out_dict[key] = parsed_value
+        existing_value = out_dict.get(key)
+        if existing_value is not None:
+            if existing_value != parsed_value:
+                raise argparse.ArgumentTypeError(
+                    f"Conflicting values specified for key: {key}")
+        else:
+            out_dict[key] = parsed_value
 
     return out_dict
 
