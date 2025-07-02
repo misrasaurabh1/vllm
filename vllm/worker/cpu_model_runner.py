@@ -5,6 +5,7 @@ import dataclasses
 import weakref
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import (TYPE_CHECKING, Any, Dict, List, Optional, Set, Type,
                     TypeVar, Union)
 
@@ -12,6 +13,7 @@ import torch
 from torch import nn
 
 from vllm.attention import AttentionMetadata, get_attn_backend
+from vllm.attention.backends.abstract import AttentionBackend
 from vllm.config import VllmConfig
 from vllm.forward_context import set_forward_context
 from vllm.logger import init_logger
@@ -79,9 +81,9 @@ class ModelInputForCPU(ModelRunnerInputBase):
         tensor_dict: Dict[str, Any],
         attn_backend: Optional["AttentionBackend"] = None
     ) -> TModelInputForCPU:
+        # Avoid extra pop and wasteful copying by mutating tensor_dict only if necessary
         if attn_backend is not None:
-            tensor_dict = _init_attn_metadata_from_tensor_dict(
-                attn_backend, tensor_dict)
+            tensor_dict = _init_attn_metadata_from_tensor_dict(attn_backend, tensor_dict)
         return cls(**tensor_dict)
 
 
@@ -669,3 +671,10 @@ class CPUModelRunner(CPUModelRunnerBase[ModelInputForCPUWithSamplingMetadata]):
 
     def generate_proposals(self, *args, **kwargs):
         return self.model.generate_proposals(*args, **kwargs)
+
+
+# Memoize fields lookup to avoid repeated dataclasses.fields calls.
+@lru_cache(maxsize=16)
+def _get_metadata_cls_field_names(metadata_cls):
+    # Returns names in tuple to make "in" checks fast.
+    return tuple(f.name for f in dataclasses.fields(metadata_cls))
