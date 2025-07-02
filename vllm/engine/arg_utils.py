@@ -43,6 +43,7 @@ from vllm.transformers_utils.utils import check_gguf_file
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import (STR_DUAL_CHUNK_FLASH_ATTN_VAL, FlexibleArgumentParser,
                         GiB_bytes, get_ip, is_in_ray_actor)
+from functools import lru_cache
 
 # yapf: enable
 
@@ -923,9 +924,8 @@ class EngineArgs:
 
     @classmethod
     def from_cli_args(cls, args: argparse.Namespace):
-        # Get the list of attributes of this dataclass.
-        attrs = [attr.name for attr in dataclasses.fields(cls)]
-        # Set the attributes from the parsed arguments.
+        # Set the attributes from the parsed arguments.   
+        attrs = cls._dataclass_attrs()
         engine_args = cls(**{attr: getattr(args, attr) for attr in attrs})
         return engine_args
 
@@ -1686,6 +1686,12 @@ class EngineArgs:
 
             logger.debug("Setting max_num_seqs to %d for %s usage context.",
                          self.max_num_seqs, use_context_value)
+
+    @classmethod
+    @lru_cache(maxsize=1)
+    def _dataclass_attrs(cls):
+        # Cached list of dataclass attribute names for this class.
+        return tuple(attr.name for attr in dataclasses.fields(cls))
 
 
 @dataclass
