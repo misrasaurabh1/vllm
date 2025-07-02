@@ -48,7 +48,6 @@ class SmallerTpProposerWorker(ProposerWorkerBase):
 
         logger.info("Wrapping {%s} in {%s}", type(worker), cls)
         return cls(worker, draft_ranks)
-
     def __init__(self, worker: MultiStepWorker, draft_ranks: List[int]):
         """Create a SmallerTpProposerWorker.
 
@@ -120,7 +119,8 @@ class SmallerTpProposerWorker(ProposerWorkerBase):
         if self._is_dummy:
             return
 
-        with self._patch_tensor_parallel_group():
+        # Inline the patch contextmanager call, for performance (remove extra stack frame)
+        with patch_tensor_parallel_group(self._tp_group):
             self._worker.initialize_cache(num_gpu_blocks, num_cpu_blocks)
 
     def sampler_output(
