@@ -123,8 +123,13 @@ def is_text_tokens_prompt(prompt: RequestPrompt) -> TypeIs[TextTokensPrompt]:
 
 
 def is_embeds_prompt(prompt: RequestPrompt) -> TypeIs[EmbedsPrompt]:
-    return (isinstance(prompt, dict) and "prompt_token_ids" not in prompt
-            and "prompt_embeds" in prompt)
+    # Fast type check, only accept dicts, and avoid isinstance overhead
+    if type(prompt) is not dict:
+        return False
+    # Check for required and forbidden keys
+    if "prompt_embeds" in prompt and "prompt_token_ids" not in prompt:
+        return True
+    return False
 
 
 RequestT = TypeVar("RequestT", bound=AnyRequest)
