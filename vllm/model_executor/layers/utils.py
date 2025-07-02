@@ -108,9 +108,18 @@ def cpu_unquantized_gemm(layer: torch.nn.Module,
 
 
 def dispatch_unquantized_gemm() -> Callable[..., torch.Tensor]:
-    if current_platform.is_rocm():
-        return rocm_unquantized_gemm
-    elif current_platform.is_cpu():
-        return cpu_unquantized_gemm
-    else:
-        return default_unquantized_gemm
+    # Cache platform dispatch function after first computation
+    # This avoids recomputing is_rocm/is_cpu platform checks each time.
+    # The closure ensures thread-safety and correctness for single-load global setup.
+
+    # Function-local cache avoids global import/assignment issues
+    if not hasattr(dispatch_unquantized_gemm, "_cached_impl"):
+        if current_platform.is_rocm():
+            impl = rocm_unquantized_gemm
+        elif current_platform.is_cpu():
+            impl = cpu_unquantized_gemm
+        else:
+            impl = default_unquantized_gemm
+        dispatch_unquantized_gemm._cached_impl = impl
+
+    return dispatch_unquantized_gemm._cached_impl
