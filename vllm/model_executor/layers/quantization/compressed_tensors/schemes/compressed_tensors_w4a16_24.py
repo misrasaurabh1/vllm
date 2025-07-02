@@ -5,8 +5,6 @@ from typing import Callable, Optional
 
 import torch
 from torch.nn import Parameter
-
-from vllm import _custom_ops as ops
 from vllm.model_executor.layers.quantization.compressed_tensors.schemes import (
     CompressedTensorsScheme)
 from vllm.model_executor.layers.quantization.gptq_marlin_24 import (
@@ -40,6 +38,7 @@ class CompressedTensorsW4A16Sparse24(CompressedTensorsScheme):
                 f"Supported num_bits = {W4A16SPARSE24_SUPPORTED_BITS}")
 
         self.quant_type = W4A16SPARSE24_SUPPORTED_TYPES_MAP[num_bits]
+        self._quant_type_id = self.quant_type.id
 
         if self.strategy == "group" and self.group_size is None:
             raise ValueError(
@@ -136,23 +135,31 @@ class CompressedTensorsW4A16Sparse24(CompressedTensorsScheme):
 
     def apply_weights(self, layer: torch.nn.Module, x: torch.Tensor,
                       bias: Optional[torch.Tensor]) -> torch.Tensor:
-
+        # Fast attribute fetching - local variables for layer attributes
         qweight = layer.weight_packed
         meta = layer.meta
         scales = layer.scale_packed
         workspace = layer.workspace
 
-        x_2d = x.view(-1, x.shape[-1])
+        # Avoid unnecessary view if already 2D
+        if x.dim() == 2:
+            x_2d = x
+        else:
+            x_2d = x.view(-1, x.shape[-1])
 
-        size_m = x_2d.shape[0]
-        size_k = x_2d.shape[1]
+        size_m, size_k = x_2d.shape
         size_n = scales.shape[1]
 
-        output_2d = ops.gptq_marlin_24_gemm(x_2d, qweight, meta, scales,
-                                            workspace, self.quant_type, size_m,
-                                            size_n, size_k)
+        # Use _quant_type_id directly to avoid recomputation of id property
+        output_2d = torch.ops._C.gptq_marlin_24_gemm(
+            x_2d, qweight, meta, scales,
+            workspace, self._quant_type_id, size_m, size_n, size_k)
 
-        output = output_2d.view(x.shape[:-1] + (output_2d.shape[1], ))
+        # Optimize view to only call .view if necessary
+        if x_2d is not x or x_2d.shape[0] != x.shape[0]:
+            output = output_2d.view(x.shape[:-1] + (output_2d.shape[1],))
+        else:
+            output = output_2d
 
         if bias is not None:
             output.add_(bias)  # In-place add
