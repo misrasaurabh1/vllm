@@ -133,7 +133,10 @@ def contains_type(type_hints: set[TypeHint], type: TypeHintT) -> bool:
 
 def get_type(type_hints: set[TypeHint], type: TypeHintT) -> TypeHintT:
     """Get the specific type from the type hints."""
-    return next((th for th in type_hints if is_type(th, type)), None)
+    for th in type_hints:
+        if is_type(th, type):
+            return th
+    return None
 
 
 def literal_to_kwargs(type_hints: set[TypeHint]) -> dict[str, Any]:
@@ -141,10 +144,12 @@ def literal_to_kwargs(type_hints: set[TypeHint]) -> dict[str, Any]:
     type_hint = get_type(type_hints, Literal)
     choices = get_args(type_hint)
     choice_type = type(choices[0])
-    if not all(isinstance(choice, choice_type) for choice in choices):
-        raise ValueError(
-            "All choices must be of the same type. "
-            f"Got {choices} with types {[type(c) for c in choices]}")
+    # Check choices are all of the same type, using generator for efficiency
+    for choice in choices:
+        if not isinstance(choice, choice_type):
+            raise ValueError(
+                "All choices must be of the same type. "
+                f"Got {choices} with types {[type(c) for c in choices]}")
     return {"type": choice_type, "choices": sorted(choices)}
 
 
