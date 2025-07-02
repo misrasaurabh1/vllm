@@ -43,6 +43,7 @@ from vllm.transformers_utils.utils import check_gguf_file
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import (STR_DUAL_CHUNK_FLASH_ATTN_VAL, FlexibleArgumentParser,
                         GiB_bytes, get_ip, is_in_ray_actor)
+from vllm.platforms import current_platform
 
 # yapf: enable
 
@@ -80,9 +81,15 @@ def optional_type(
 
 
 def union_dict_and_str(val: str) -> Optional[Union[str, dict[str, str]]]:
-    if not re.match("^{.*}$", val):
-        return str(val)
-    return optional_type(json.loads)(val)
+    # Use pre-compiled regex pattern for speed
+    if not _DICT_PATTERN.match(val):
+        return val
+    # Avoid unnecessary repeated closure construction:
+    # Instead of creating a new optional_type(json.loads) on every call,
+    # create it once and reuse.
+    # However, if kwargs/usage is dynamic, this closure-per-call is required for API.
+    _opt_json_loads = _union_dict_and_str_opt_json_loads_singleton
+    return _opt_json_loads(val)
 
 
 @deprecated(
@@ -1786,3 +1793,18 @@ def _engine_args_parser():
 def _async_engine_args_parser():
     return AsyncEngineArgs.add_cli_args(FlexibleArgumentParser(),
                                         async_args_only=True)
+
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
+# yapf: disable
+
+# Helper to avoid repeated wrapping of return_type
+def _parse_type(return_type):
+    # In the original user code, parse_type was not defined.
+    # Assuming it means "call return_type" directly
+    return return_type
+
+_DICT_PATTERN = re.compile(r"^{.*}$")
+
+_union_dict_and_str_opt_json_loads_singleton = optional_type(json.loads)
