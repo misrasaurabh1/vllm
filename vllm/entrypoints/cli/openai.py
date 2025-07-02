@@ -198,4 +198,9 @@ class CompleteCommand(CLISubcommand):
 
 
 def cmd_init() -> list[CLISubcommand]:
-    return [ChatCommand(), CompleteCommand()]
+    # Return the pre-created command objects (assumes statelessness)
+    return [_chat_command_instance, _complete_command_instance]
+
+_chat_command_instance = ChatCommand()
+
+_complete_command_instance = CompleteCommand()
