@@ -1747,33 +1747,20 @@ def human_readable_int(value):
     - '25.6k' -> 25,600
     """
     value = value.strip()
-    match = re.fullmatch(r'(\d+(?:\.\d+)?)([kKmMgGtT])', value)
+    match = _HUMAN_INT_PATTERN.fullmatch(value)
     if match:
-        decimal_multiplier = {
-            'k': 10**3,
-            'm': 10**6,
-            'g': 10**9,
-        }
-        binary_multiplier = {
-            'K': 2**10,
-            'M': 2**20,
-            'G': 2**30,
-        }
-
         number, suffix = match.groups()
-        if suffix in decimal_multiplier:
-            mult = decimal_multiplier[suffix]
-            return int(float(number) * mult)
-        elif suffix in binary_multiplier:
-            mult = binary_multiplier[suffix]
+        if suffix in _DECIMAL_MULTIPLIER:
+            # Always allow decimal for decimal multiplier
+            return int(float(number) * _DECIMAL_MULTIPLIER[suffix])
+        elif suffix in _BINARY_MULTIPLIER:
             # Do not allow decimals with binary multipliers
-            try:
-                return int(number) * mult
-            except ValueError as e:
-                raise argparse.ArgumentTypeError("Decimals are not allowed " \
-                f"with binary suffixes like {suffix}. Did you mean to use " \
-                f"{number}{suffix.lower()} instead?") from e
-
+            if '.' in number:
+                raise argparse.ArgumentTypeError(
+                    f"Decimals are not allowed with binary suffixes like {suffix}. "
+                    f"Did you mean to use {number}{suffix.lower()} instead?"
+                )
+            return int(number) * _BINARY_MULTIPLIER[suffix]
     # Regular plain number.
     return int(value)
 
@@ -1786,3 +1773,9 @@ def _engine_args_parser():
 def _async_engine_args_parser():
     return AsyncEngineArgs.add_cli_args(FlexibleArgumentParser(),
                                         async_args_only=True)
+
+_HUMAN_INT_PATTERN = re.compile(r'(\d+(?:\.\d+)?)([kKmMgGtT])')
+
+_DECIMAL_MULTIPLIER = {'k': 10 ** 3, 'm': 10 ** 6, 'g': 10 ** 9}
+
+_BINARY_MULTIPLIER = {'K': 2 ** 10, 'M': 2 ** 20, 'G': 2 ** 30}
