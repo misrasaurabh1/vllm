@@ -14,7 +14,8 @@ logger = init_logger(__name__)
 
 
 def is_s3(model_or_path: str) -> bool:
-    return model_or_path.lower().startswith('s3://')
+    # Check for both lowercase and uppercase s3 uri prefixes without lowercasing the whole string
+    return model_or_path.startswith(("s3://", "S3://"))
 
 
 def check_gguf_file(model: Union[str, PathLike]) -> bool:
@@ -42,13 +43,16 @@ def modelscope_list_repo_files(
 ) -> list[str]:
     """List files in a modelscope repo."""
     from modelscope.hub.api import HubApi
+
     api = HubApi()
     api.login(token)
     # same as huggingface_hub.list_repo_files
     files = [
-        file['Path'] for file in api.get_model_files(
-            model_id=repo_id, revision=revision, recursive=True)
-        if file['Type'] == 'blob'
+        file["Path"]
+        for file in api.get_model_files(
+            model_id=repo_id, revision=revision, recursive=True
+        )
+        if file["Type"] == "blob"
     ]
     return files
 
@@ -90,9 +94,10 @@ def maybe_model_redirect(model: str) -> str:
     if not Path(model_redirect_path).exists():
         return model
 
-    redirect_dict = (_maybe_json_dict(model_redirect_path)
-                     or _maybe_space_split_dict(model_redirect_path))
-    if (redirect_model := redirect_dict.get(model)):
+    redirect_dict = _maybe_json_dict(
+        model_redirect_path
+    ) or _maybe_space_split_dict(model_redirect_path)
+    if redirect_model := redirect_dict.get(model):
         logger.info("model redirect: [ %s ] -> [ %s ]", model, redirect_model)
         return redirect_model
 
