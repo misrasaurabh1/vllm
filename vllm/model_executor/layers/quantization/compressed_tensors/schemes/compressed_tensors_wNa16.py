@@ -44,26 +44,34 @@ class CompressedTensorsWNA16(CompressedTensorsScheme):
                  group_size: Optional[int] = None,
                  symmetric: Optional[bool] = True,
                  actorder: Optional[ActivationOrdering] = None):
+        # Precompute values for performance.
+        pack_factor = 32 // num_bits
+        gs = -1 if group_size is None else group_size
+        has_g_idx = actorder == ActivationOrdering.GROUP
 
-        self.pack_factor = 32 // num_bits
-        self.strategy = strategy
-        self.symmetric = symmetric
-        self.group_size = -1 if group_size is None else group_size
-        self.has_g_idx = actorder == ActivationOrdering.GROUP
-
-        if self.group_size == -1 and self.strategy != "channel":
-            raise ValueError("Marlin kernels require group quantization or "
-                             "channelwise quantization, but found no group "
-                             "size and strategy is not channelwise.")
+        if gs == -1 and strategy != "channel":
+            raise ValueError(
+                "Marlin kernels require group quantization or "
+                "channelwise quantization, but found no group "
+                "size and strategy is not channelwise."
+            )
 
         if num_bits not in WNA16_SUPPORTED_TYPES_MAP:
             raise ValueError(
                 f"Unsupported num_bits = {num_bits}. "
-                f"Supported num_bits = {WNA16_SUPPORTED_TYPES_MAP.keys()}")
+                f"Supported num_bits = {WNA16_SUPPORTED_TYPES_MAP.keys()}"
+            )
 
-        self.quant_type = (WNA16_ZP_SUPPORTED_TYPES_MAP[num_bits]
-                           if not self.symmetric else
-                           WNA16_SUPPORTED_TYPES_MAP[num_bits])
+        self.strategy = strategy
+        self.symmetric = symmetric
+        self.group_size = gs
+        self.has_g_idx = has_g_idx
+        self.pack_factor = pack_factor
+        self.quant_type = (
+            WNA16_ZP_SUPPORTED_TYPES_MAP[num_bits]
+            if not symmetric else
+            WNA16_SUPPORTED_TYPES_MAP[num_bits]
+        )
 
     @classmethod
     def get_min_capability(cls) -> int:
