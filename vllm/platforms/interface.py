@@ -14,6 +14,7 @@ from torch.distributed import PrefixStore, ProcessGroup
 
 from vllm.inputs import ProcessorInputs, PromptType
 from vllm.logger import init_logger
+import vllm.envs as envs
 
 if TYPE_CHECKING:
     from vllm.config import ModelConfig, VllmConfig
@@ -545,3 +546,5 @@ class Platform:
 class UnspecifiedPlatform(Platform):
     _enum = PlatformEnum.UNSPECIFIED
     device_type = ""
+
+MAX_TOKENS_PER_EXPERT = envs.VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE

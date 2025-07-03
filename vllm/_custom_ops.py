@@ -1190,7 +1190,6 @@ def scaled_fp4_experts_quant(
     # NVFP4 MoE Expert Quantization. This is used to prevent the kernel
     # from running out of memory. This value can also be increased to support
     # larger models.
-    MAX_TOKENS_PER_EXPERT = envs.VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE
     m_numtopk, k = input_tensor.shape
 
     assert (m_numtopk <= MAX_TOKENS_PER_EXPERT * topk), (
@@ -1198,21 +1197,32 @@ def scaled_fp4_experts_quant(
         f"{MAX_TOKENS_PER_EXPERT})"
         f" for cutlass_moe_fp4, observed m_numtopk = {m_numtopk}. Use"
         f" VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE to set this value.")
+
+    # Precompute scales_k and padded_k as integers; 
+    # padded_k = ceil(scales_k/4)
     scales_k = k // 16
-    padded_k = (scales_k + (4 - 1)) // 4
+    padded_k = (scales_k + 3) // 4   # same as math.ceil(scales_k/4)
 
     # output is uint8 and packed fp4 values
-    output = torch.empty(m_numtopk,
-                         k // 2,
-                         device=input_tensor.device,
-                         dtype=torch.uint8)
-    output_scales = torch.empty(MAX_TOKENS_PER_EXPERT * topk,
-                                padded_k,
-                                dtype=torch.int32,
-                                device=input_tensor.device)
-    torch.ops._C.scaled_fp4_experts_quant(output, output_scales, input_tensor,
-                                          input_global_scale, expert_offsets,
-                                          blockscale_offsets)
+    # Avoid Python-level initialization; let PyTorch allocate directly
+    output = torch.empty(
+        m_numtopk, k // 2,
+        device=input_tensor.device,
+        dtype=torch.uint8
+    )
+    output_scales = torch.empty(
+        MAX_TOKENS_PER_EXPERT * topk, padded_k,
+        dtype=torch.int32,
+        device=input_tensor.device
+    )
+
+    # Call the custom op for quantization
+    torch.ops._C.scaled_fp4_experts_quant(
+        output, output_scales, input_tensor,
+        input_global_scale, expert_offsets, blockscale_offsets
+    )
+
+    # Convert output_scales to float8_e4m3fn view (cheap if shape compatible)
     output_scales = output_scales.view(torch.float8_e4m3fn)
     return output, output_scales
 
@@ -1899,3 +1909,5 @@ if hasattr(torch.ops._C, "int8_scaled_mm_with_quant"):
         M = mat1.size(0)
         N = mat2.size(0)
         return torch.empty((M, N), dtype=out_dtype)
+
+MAX_TOKENS_PER_EXPERT = envs.VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE
