@@ -643,7 +643,11 @@ if hasattr(torch.ops._C, "ggml_moe_a8_vec"):
 
 # cutlass
 def cutlass_scaled_mm_supports_fp4(cuda_device_capability: int) -> bool:
-    return torch.ops._C.cutlass_scaled_mm_supports_fp4(cuda_device_capability)
+    global _cutlass_scaled_mm_supports_fp4
+    if _cutlass_scaled_mm_supports_fp4 is None:
+        # Cache the function pointer on first use
+        _cutlass_scaled_mm_supports_fp4 = torch.ops._C.cutlass_scaled_mm_supports_fp4
+    return _cutlass_scaled_mm_supports_fp4(cuda_device_capability)
 
 
 def cutlass_scaled_fp4_mm(a: torch.Tensor, b: torch.Tensor,
@@ -1899,3 +1903,5 @@ if hasattr(torch.ops._C, "int8_scaled_mm_with_quant"):
         M = mat1.size(0)
         N = mat2.size(0)
         return torch.empty((M, N), dtype=out_dtype)
+
+_cutlass_scaled_mm_supports_fp4 = None
