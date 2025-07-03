@@ -783,14 +783,9 @@ def cutlass_sparse_compress(a: torch.Tensor) \
         - The shape of `a_nzs` is `(m, k // 2)`, where `m` and `k` are the dimensions of the input tensor.
         - The shape of `a_meta` is `(m, k // 2 // elemsPerMetaElem)`.
     """
-    assert (a.dtype in [
-        torch.int8, torch.float8_e4m3fn, torch.bfloat16, torch.float16
-    ])
-    assert (a.is_contiguous())
-
-    # a_meta.dtype: torch.uint8 so elemsPerMetaElem = 8b / 2b_per_nz = 4
-    elemsPerMetaElem = 4
-    assert (a.shape[1] % (2 * elemsPerMetaElem) == 0)
+    assert a.dtype in _ALLOWED_DTYPES
+    assert a.is_contiguous()
+    assert a.shape[1] % (2 * _ELEMS_PER_META_ELEM) == 0
 
     return torch.ops._C.cutlass_sparse_compress(a)
 
@@ -1899,3 +1894,9 @@ if hasattr(torch.ops._C, "int8_scaled_mm_with_quant"):
         M = mat1.size(0)
         N = mat2.size(0)
         return torch.empty((M, N), dtype=out_dtype)
+
+_ALLOWED_DTYPES = (
+    torch.int8, torch.float8_e4m3fn, torch.bfloat16, torch.float16
+)
+
+_ELEMS_PER_META_ELEM = 4
