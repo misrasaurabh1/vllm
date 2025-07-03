@@ -11,6 +11,7 @@ from vllm.model_executor.layers.quantization.utils.allspark_utils import (
     ALLSPARK_AMPERE_M_CUBLAS_THRESHOLD, check_allspark_supported_dtype_shape)
 from vllm.model_executor.parameter import (BasevLLMParameter,
                                            permute_param_layout_)
+from vllm.platforms import current_platform
 
 from .MPLinearKernel import MPLinearKernel, MPLinearLayerConfig
 
@@ -24,18 +25,19 @@ class AllSparkLinearKernel(MPLinearKernel):
     @classmethod
     def can_implement(cls,
                       c: MPLinearLayerConfig) -> tuple[bool, Optional[str]]:
+        # Most common/cheapest failures first (helps quick-exit for fast path)
         if c.has_g_idx:
             return False, "Act reordering currently not supported by AllSpark"
-
         if c.zero_points:
             return False, "Zero points currently not supported by AllSpark"
-
+        # Now do the more expensive capability/shape check.
         return check_allspark_supported_dtype_shape(
             c.partition_weight_shape[0],  # in_features
             c.partition_weight_shape[1],  # out_features
             c.group_size,
             c.weight_type,
-            c.act_type)
+            c.act_type,
+        )
 
     # note assumes that
     #  `weight_packed` is: {input_dim = 0, output_dim = 1, packed_dim = 0}
@@ -114,3 +116,13 @@ class AllSparkLinearKernel(MPLinearKernel):
             output.add_(bias)  # In-place add
 
         return output.reshape(out_shape)
+
+
+# Memoize the device capability to greatly speed up check_allspark_supported_dtype_shape calls
+def _get_device_capability_int():
+    tup = current_platform.get_device_capability()
+    if tup is None:
+        return -1
+    return tup.to_int()
+
+_DEVICE_CAPABILITY_INT = _get_device_capability_int()
