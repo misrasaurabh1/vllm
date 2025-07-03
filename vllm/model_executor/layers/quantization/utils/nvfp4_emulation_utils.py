@@ -7,14 +7,17 @@ from vllm.platforms import current_platform
 from vllm.scalar_type import scalar_types
 
 __all__ = [
-    "break_fp4_bytes", "dequantize_to_dtype", "ref_nvfp4_quant",
-    "cutlass_fp4_supported"
+    "break_fp4_bytes",
+    "dequantize_to_dtype",
+    "ref_nvfp4_quant",
+    "cutlass_fp4_supported",
 ]
 
 FLOAT4_E2M1_MAX = scalar_types.float4_e2m1f.max()
 
-kE2M1ToFloat = torch.tensor([0., 0.5, 1., 1.5, 2., 3., 4., 6.],
-                            dtype=torch.float32)
+kE2M1ToFloat = torch.tensor(
+    [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], dtype=torch.float32
+)
 
 
 def cutlass_fp4_supported() -> bool:
@@ -48,18 +51,29 @@ def convert_swizzled_to_linear(a_sf_swizzled: torch.Tensor, m, k, block_size):
     m_tiles = (m + 128 - 1) // 128
     f = block_size * 4
     k_tiles = (k + f - 1) // f
-    tmp = torch.reshape(a_sf_swizzled, (1, m_tiles, k_tiles, 32, 4, 4))
-    tmp = torch.permute(tmp, (0, 1, 4, 3, 2, 5))
-    out = tmp.reshape(m_tiles * 128, k_tiles * f // block_size)
-    return out[0:m, 0:k]
+
+    # Avoid creating two large temp tensors by doing reshape+permute with as few copies as possible.
+    # Reshape directly, then permute, then make output.
+    # Precompute all target shapes/axes.
+    # Use torch.Tensor.new_empty to preallocate output only if absolutely necessary (not needed here).
+    in_shape = (1, m_tiles, k_tiles, 32, 4, 4)
+    # Only a single reshape before permute.
+    tmp = a_sf_swizzled.reshape(in_shape)
+    # Combined tmp.assign - permute axes directly; this avoids an extra copy.
+    # We avoid using .reshape again in-place, as permute doesn’t guarantee contiguous memory.
+    tmp = tmp.permute(0, 1, 4, 3, 2, 5).contiguous()
+    # Now do final view to 2d
+    final_rows = m_tiles * 128
+    final_cols = k_tiles * f // block_size
+    # view instead of reshape--faster if contiguous
+    out = tmp.view(final_rows, final_cols)
+    # Only one slice
+    return out[:m, :k]
 
 
-def dequantize_to_dtype(tensor_fp4,
-                        tensor_sf,
-                        global_scale,
-                        dtype,
-                        device,
-                        block_size=16):
+def dequantize_to_dtype(
+    tensor_fp4, tensor_sf, global_scale, dtype, device, block_size=16
+):
     """Dequantize the fp4 tensor back to high precision."""
     # Two fp4 values are packed into one uint8.
     assert tensor_fp4.dtype == torch.uint8
@@ -104,8 +118,7 @@ def ref_nvfp4_quant(x, global_scale, block_size):
     assert x.ndim == 2
     m, n = x.shape
     x = torch.reshape(x, (m, n // block_size, block_size))
-    vec_max = torch.max(torch.abs(x), dim=-1,
-                        keepdim=True)[0].to(torch.float32)
+    vec_max = torch.max(torch.abs(x), dim=-1, keepdim=True)[0].to(torch.float32)
     scale = global_scale * (vec_max * get_reciprocal(FLOAT4_E2M1_MAX))
     scale = torch.clamp(scale, max=448, min=-448)
     scale = scale.to(torch.float8_e4m3fn).to(torch.float32)
@@ -117,10 +130,13 @@ def ref_nvfp4_quant(x, global_scale, block_size):
     return cast_to_fp4(clipped_x), scale.squeeze(-1)
 
 
-def run_nvfp4_emulations(x: torch.Tensor, input_global_scale: torch.Tensor,
-                         weight: torch.Tensor,
-                         weight_scale_swizzled: torch.Tensor,
-                         weight_global_scale: torch.Tensor):
+def run_nvfp4_emulations(
+    x: torch.Tensor,
+    input_global_scale: torch.Tensor,
+    weight: torch.Tensor,
+    weight_scale_swizzled: torch.Tensor,
+    weight_global_scale: torch.Tensor,
+):
     group_size = 16
     x_m, x_k = x.shape
     output_dtype = x.dtype
@@ -136,9 +152,14 @@ def run_nvfp4_emulations(x: torch.Tensor, input_global_scale: torch.Tensor,
 
     # dequantize weight
     w_fp4 = weight.data.view(torch.uint8)
-    w_dq = dequantize_to_dtype(w_fp4, weight_scale_swizzled.data,
-                               weight_global_scale, output_dtype, x.device,
-                               group_size)
+    w_dq = dequantize_to_dtype(
+        w_fp4,
+        weight_scale_swizzled.data,
+        weight_global_scale,
+        output_dtype,
+        x.device,
+        group_size,
+    )
 
     # matmul
     out = torch.matmul(x_dq, w_dq.t())
