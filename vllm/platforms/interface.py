@@ -6,7 +6,7 @@ import platform
 import random
 from datetime import timedelta
 from platform import uname
-from typing import TYPE_CHECKING, NamedTuple, Optional, Union
+from typing import overload, TYPE_CHECKING, NamedTuple, Optional, Union
 
 import numpy as np
 import torch
@@ -35,6 +35,15 @@ logger = init_logger(__name__)
 def in_wsl() -> bool:
     # Reference: https://github.com/microsoft/WSL/issues/4071
     return "microsoft" in " ".join(uname()).lower()
+
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
+# --- OPTIMIZED SCALED FP4 QUANT ---
+
+def _round_up(x: int, y: int) -> int:
+    """Helper to round up x to nearest multiple of y."""
+    return (x + y - 1) // y * y
 
 
 class _Backend(enum.Enum):
@@ -468,6 +477,10 @@ class Platform:
         """
         import vllm.envs as envs
         from vllm.config import get_current_vllm_config
+        ...@overload
+        ...@overload
+        ...@overload
+        ...    
 
         parallel_config = get_current_vllm_config().parallel_config
         return (envs.VLLM_USE_V1
