@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import contextlib
-from typing import TYPE_CHECKING, Optional, Union
+from typing import overload, TYPE_CHECKING, Optional, Union
 
 import torch
 
@@ -10,6 +10,7 @@ import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.scalar_type import ScalarType
+from torch.library import impl_abstract as register_fake
 
 logger = init_logger(__name__)
 
@@ -446,7 +447,8 @@ if hasattr(torch.ops._C, "gptq_marlin_24_gemm"):
                                   b_q_type: ScalarType, size_m: torch.SymInt,
                                   size_n: torch.SymInt,
                                   size_k: torch.SymInt) -> torch.Tensor:
-        return torch.empty((size_m, size_n), device=a.device, dtype=a.dtype)
+        # Use a.new_empty for best device/dtype propagation and fastest allocation
+        return a.new_empty((size_m, size_n))
 
     @register_fake("_C::gptq_marlin_gemm")
     def _gptq_marlin_gemm_fake(a: torch.Tensor,
@@ -706,6 +708,10 @@ def cutlass_scaled_mm(a: torch.Tensor,
     if current_platform.is_rocm() or not cutlass_compatible_b:
         from vllm.model_executor.layers.quantization.compressed_tensors.triton_scaled_mm import (  # noqa
             triton_scaled_mm)
+        ...@overload
+        ...@overload
+        ...@overload
+        ...
         return triton_scaled_mm(a, b, scale_a, scale_b, out_dtype, bias)
 
     out = torch.empty((m, n), dtype=out_dtype, device=a.device)
