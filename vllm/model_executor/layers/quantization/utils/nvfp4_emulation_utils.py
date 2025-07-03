@@ -77,41 +77,50 @@ def dequantize_to_dtype(tensor_fp4,
 
 
 def get_reciprocal(x):
-    if isinstance(x, torch.Tensor):
-        return torch.where(x == 0, torch.tensor(0.0, dtype=x.dtype), 1.0 / x)
-    elif isinstance(x, (float, int)):
+    # Optimize: Avoid unnecessary allocation. Use torch.where fallback for tensors.
+    if isinstance(x, (float, int)):
         return 0.0 if x == 0 else 1.0 / x
+    elif isinstance(x, torch.Tensor):
+        # torch.where already allocates constants of proper dtype/device.
+        return torch.where(x == 0, 0.0, 1.0 / x)
     else:
         raise TypeError("Input must be a float, int, or a torch.Tensor.")
 
 
 def cast_to_fp4(x):
-    sign = torch.sign(x)
-    x = torch.abs(x)
-    x[(x >= 0.0) & (x <= 0.25)] = 0.0
-    x[(x > 0.25) & (x < 0.75)] = 0.5
-    x[(x >= 0.75) & (x <= 1.25)] = 1.0
-    x[(x > 1.25) & (x < 1.75)] = 1.5
-    x[(x >= 1.75) & (x <= 2.5)] = 2.0
-    x[(x > 2.5) & (x < 3.5)] = 3.0
-    x[(x >= 3.5) & (x <= 5.0)] = 4.0
-    x[x > 5.0] = 6.0
-    return x * sign
+    # Fast bucketize in a single pass using bin edges and mapping
+    # Edges correspond to: (0,.25], (.25,.75), [.75,1.25], (1.25,1.75], [1.75,2.5], (2.5,3.5], [3.5,5.0], (>5.0)
+    # Outputs:           0.0   0.5     1.0     1.5   2.0    3.0     4.0   6.0
+    abs_x = torch.abs(x)
+    # np style bins: [0.0, 0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0]
+    # right=True: intervals are [bin[i-1], bin[i]]
+    bins = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0], device=x.device, dtype=x.dtype)
+    # Indices:   0=0.0, 1=0.5, 2=1.0, 3=1.5, 4=2.0, 5=3.0, 6=4.0, 7=6.0
+    values = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], device=x.device, dtype=x.dtype)
+    idx = torch.bucketize(abs_x, bins, right=True)
+    quant = values[idx]
+    out = quant * torch.sign(x)
+    return out
 
 
 def ref_nvfp4_quant(x, global_scale, block_size):
+    # Fast branch: fewer intermediate temporaries, all computation in one pass.
     assert global_scale.dtype == torch.float32
     assert x.ndim == 2
     m, n = x.shape
-    x = torch.reshape(x, (m, n // block_size, block_size))
-    vec_max = torch.max(torch.abs(x), dim=-1,
-                        keepdim=True)[0].to(torch.float32)
+    # Reshape for block-wise ops (ensure it's contiguous, required for .view if needed)
+    x_reshaped = x.reshape(m, n // block_size, block_size)
+    abs_x = torch.abs(x_reshaped)
+    # vec_max has shape (m, n//block_size, 1)
+    vec_max = abs_x.amax(dim=-1, keepdim=True).to(torch.float32)
     scale = global_scale * (vec_max * get_reciprocal(FLOAT4_E2M1_MAX))
-    scale = torch.clamp(scale, max=448, min=-448)
+    scale = torch.clamp(scale, min=-448, max=448)
+    # Convert scale to float8 and back, only once
     scale = scale.to(torch.float8_e4m3fn).to(torch.float32)
+    # Output scale (block) = reciprocal, do all at float32
     output_scale = get_reciprocal(scale * get_reciprocal(global_scale))
-
-    scaled_x = x.to(torch.float32) * output_scale
+    # Mul by output scale (broadcast)
+    scaled_x = x_reshaped.to(torch.float32) * output_scale
     clipped_x = torch.clamp(scaled_x, -6.0, 6.0).reshape(m, n)
     # both outputs are float32
     return cast_to_fp4(clipped_x), scale.squeeze(-1)
