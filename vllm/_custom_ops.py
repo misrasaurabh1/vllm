@@ -1334,11 +1334,10 @@ def allspark_w8a16_gemm(a: torch.Tensor, b_qweight: torch.Tensor,
                         group_size: int, sm_count: int, sm_version: int,
                         CUBLAS_M_THRESHOLD: int, has_zp: bool,
                         n32k16_reorder: bool) -> torch.Tensor:
-
-    return torch.ops._C.allspark_w8a16_gemm(a, b_qweight, b_scales, b_qzeros,
-                                            n, group_size, sm_count,
-                                            sm_version, CUBLAS_M_THRESHOLD,
-                                            has_zp, n32k16_reorder)
+    return _allspark_w8a16_gemm(a, b_qweight, b_scales, b_qzeros,
+                                n, group_size, sm_count,
+                                sm_version, CUBLAS_M_THRESHOLD,
+                                has_zp, n32k16_reorder)
 
 
 # int8
@@ -1899,3 +1898,5 @@ if hasattr(torch.ops._C, "int8_scaled_mm_with_quant"):
         M = mat1.size(0)
         N = mat2.size(0)
         return torch.empty((M, N), dtype=out_dtype)
+
+_allspark_w8a16_gemm = torch.ops._C.allspark_w8a16_gemm
