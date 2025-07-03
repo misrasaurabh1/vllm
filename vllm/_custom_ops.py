@@ -1445,7 +1445,14 @@ def ggml_moe_a8_vec(
 
 
 def ggml_moe_get_block_size(quant_type: int) -> int:
-    return torch.ops._C.ggml_moe_get_block_size(quant_type)
+    """Returns cached block size for a quant_type if available,
+    otherwise computes and caches it."""
+    cached = _ggml_moe_block_size_cache.get(quant_type)
+    if cached is not None:
+        return cached
+    block_size = torch.ops._C.ggml_moe_get_block_size(quant_type)
+    _ggml_moe_block_size_cache[quant_type] = block_size
+    return block_size
 
 
 # mamba
@@ -1899,3 +1906,5 @@ if hasattr(torch.ops._C, "int8_scaled_mm_with_quant"):
         M = mat1.size(0)
         N = mat2.size(0)
         return torch.empty((M, N), dtype=out_dtype)
+
+_ggml_moe_block_size_cache = {}
