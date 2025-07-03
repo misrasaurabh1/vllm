@@ -69,7 +69,9 @@ class PaliGemmaProcessingInfo(BaseProcessingInfo):
         return self.ctx.get_hf_config(PaliGemmaConfig)
 
     def get_vision_encoder_info(self):
-        return get_vision_encoder_info(self.get_hf_config())
+        if self._vision_encoder_info is None:
+            self._vision_encoder_info = get_vision_encoder_info(self.get_hf_config())
+        return self._vision_encoder_info
 
     def get_supported_mm_limits(self) -> Mapping[str, Optional[int]]:
         return {"image": 1}
@@ -80,12 +82,15 @@ class PaliGemmaProcessingInfo(BaseProcessingInfo):
         image_width: int,
         image_height: int,
     ) -> int:
+        # Use cached vision_encoder_info for efficiency
         vision_encoder_info = self.get_vision_encoder_info()
-
         return vision_encoder_info.get_num_image_tokens(
             image_width=image_width,
             image_height=image_height,
         )
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._vision_encoder_info = None  # Cache to avoid repeat lookup
 
 
 class PaliGemmaDummyInputsBuilder(
