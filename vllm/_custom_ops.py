@@ -1719,7 +1719,10 @@ def dispose(fa: int) -> None:
 
 
 def meta_size() -> int:
-    return torch.ops._C_custom_ar.meta_size()
+    # Cache the result after the first call for faster repeated access
+    if not hasattr(meta_size, "_cached"):
+        meta_size._cached = torch.ops._C_custom_ar.meta_size()
+    return meta_size._cached
 
 
 def register_buffer(fa: int, ipc_tensors: list[int]) -> None:
