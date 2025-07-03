@@ -53,14 +53,15 @@ class BaseLogitsProcessor:
     def __init__(self, guide: Guide, reasoner: Optional[ReasoningParser]):
         self._guide: Guide = guide
         self._reasoner: Optional[ReasoningParser] = reasoner
-        # CFGState is used for the FSM state for CFGGuide
-        self._fsm_state: defaultdict[int, Union[int,
-                                                CFGState]] = defaultdict(int)
+        self._fsm_state: defaultdict[int, object] = defaultdict(int)
 
     def clone(self) -> "BaseLogitsProcessor":
-        cloned = copy.copy(self)
+        # Only clone stateful objects
+        cloned = object.__new__(self.__class__)
         cloned._guide = self._guide.copy()
-        cloned._fsm_state = copy.deepcopy(self._fsm_state)
+        cloned._reasoner = self._reasoner
+        # Use shallow copy for defaultdict; CFGState are immutable and ints are immutable
+        cloned._fsm_state = self._fsm_state.copy()
         return cloned
 
     def __call__(self, input_ids: list[int],
