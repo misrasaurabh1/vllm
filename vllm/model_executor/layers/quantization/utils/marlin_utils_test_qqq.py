@@ -45,22 +45,35 @@ def get_qqq_scale_perms():
 
 # NOTE(HandH1998): QQQ employs different perms for per-group and per-channel weight quantization. # noqa: E501
 def get_qqq_weight_perm(num_bits: int, quant_type: str):
-    perm_list: list[int] = []
-    for i in range(32):
-        perm1: list[int] = []
-        col = i // 4
-        for block in [0, 1]:
-            for row in [
-                    4 * (i % 4),
-                    4 * (i % 4) + 1,
-                    4 * (i % 4) + 2,
-                    4 * (i % 4) + 3,
-            ]:
-                perm1.append(16 * row + col + 8 * block)
-        for j in range(4):
-            perm_list.extend([p + 256 * j for p in perm1])
+    # Precompute all possible 'i', 'block', 'row', and 'j' using numpy broadcasting.
+    i_vals = numpy.arange(32)
+    col = i_vals // 4
+    row_base = 4 * (i_vals % 4)
+    rows = numpy.stack([
+        row_base,
+        row_base + 1,
+        row_base + 2,
+        row_base + 3
+    ], axis=1)  # shape (32, 4)
 
-    perm = numpy.array(perm_list)
+    # Full block indices: (32, 2, 4)
+    block = numpy.array([0, 1], dtype=int)
+    row_indices = rows[:, None, :]  # shape (32, 1, 4)
+    col_indices = col[:, None, None]  # (32, 1, 1)
+    block_indices = block[None, :, None]  # (1, 2, 1)
+
+    # Compute perm1 in shape (32, 2, 4)
+    # For each i: for block in [0,1], for each row (4): 16*row + col + 8*block
+    perm1 = 16 * row_indices + col_indices + 8 * block_indices  # (32, 2, 4)
+    perm1 = perm1.reshape(32, 8)  # (block=2, row=4)
+
+    # Now tile for j in range(4): generate [p + 256*j for p in perm1]
+    # perm1 shape: (32, 8), j_vals shape (4,1), so broadcasting works:
+    j_vals = numpy.arange(4, dtype=int).reshape(4, 1)  # (4,1)
+    perm_expanded = perm1[:, None, :] + 256 * j_vals   # (32, 4, 8)
+    perm_list = perm_expanded.reshape(-1)  # (32*4*8, )
+
+    perm = numpy.array(perm_list, dtype=int)
 
     assert quant_type in ["per-channel",
                           "per-group"], "not supported quantization type"
@@ -72,6 +85,7 @@ def get_qqq_weight_perm(num_bits: int, quant_type: str):
     else:
         raise Exception("num_bits must be 4, got {}".format(num_bits))
 
+    # Shape is (128,8)
     perm = perm.reshape((-1, len(interleave)))[:, interleave].ravel()
     perm = torch.from_numpy(perm)
     return perm
