@@ -1697,8 +1697,7 @@ def get_device_attribute(attribute: int, device: int) -> int:
 
 def get_max_shared_memory_per_block_device_attribute(device: int) -> int:
     # ruff: noqa: E501
-    return torch.ops._C_cuda_utils.get_max_shared_memory_per_block_device_attribute(
-        device)
+    return _get_max_shared_memory_per_block_device_attribute(device)
 
 
 # custom ar
@@ -1899,3 +1898,5 @@ if hasattr(torch.ops._C, "int8_scaled_mm_with_quant"):
         M = mat1.size(0)
         N = mat2.size(0)
         return torch.empty((M, N), dtype=out_dtype)
+
+_get_max_shared_memory_per_block_device_attribute = torch.ops._C_cuda_utils.get_max_shared_memory_per_block_device_attribute
