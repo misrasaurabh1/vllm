@@ -33,13 +33,9 @@ def marlin_qqq_weights(q_w, size_k, size_n, num_bits, perm, group_size):
 
 
 def get_qqq_scale_perms():
-    scale_perm: list[int] = []
-    for i in range(8):
-        scale_perm.extend([i + 8 * j for j in range(8)])
-    scale_perm_single: list[int] = []
-    for i in range(4):
-        scale_perm_single.extend(
-            [2 * i + j for j in [0, 1, 8, 9, 16, 17, 24, 25]])
+    # Precompute both lists with efficient list comprehensions
+    scale_perm = [i + 8 * j for i in range(8) for j in range(8)]
+    scale_perm_single = [2 * i + j for i in range(4) for j in [0, 1, 8, 9, 16, 17, 24, 25]]
     return scale_perm, scale_perm_single
 
 
