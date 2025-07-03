@@ -17,6 +17,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import copy as _cpy
 import json
 from collections import defaultdict
 from functools import lru_cache
@@ -32,6 +33,7 @@ from outlines.fsm.parsing import PartialLark
 from outlines_core.fsm.json_schema import build_regex_from_schema
 from pydantic import BaseModel
 from transformers import PreTrainedTokenizerBase
+from transformers.file_utils import SPIECE_UNDERLINE
 
 import vllm.envs as envs
 from vllm.logger import init_logger
@@ -244,41 +246,40 @@ def _adapt_tokenizer(tokenizer: PreTrainedTokenizerBase):
     able to compile FSMs for this model.
 
     """
+
+    # If already adapted, no need to do anything
     if getattr(tokenizer, "_outlines_adapted", False):
         return tokenizer
 
-    tokenizer = copy.deepcopy(tokenizer)
+    # Shallow copy is enough, reduces deepcopy overhead
+    tokenizer = _cpy.copy(tokenizer)
+    # Cache the vocab and special tokens only once
+    if not hasattr(tokenizer, "vocabulary"):
+        tokenizer.vocabulary = tokenizer.get_vocab()
+    if not hasattr(tokenizer, "special_tokens"):
+        tokenizer.special_tokens = set(tokenizer.all_special_tokens)
 
-    tokenizer.vocabulary = tokenizer.get_vocab()
-    tokenizer.special_tokens = set(tokenizer.all_special_tokens)
-
+    # Inline function for token-to-string conversion
     def convert_token_to_string(token: str) -> str:
-        from transformers.file_utils import SPIECE_UNDERLINE
-
         string = tokenizer.convert_tokens_to_string([token])
-
-        # A hack to handle missing spaces to HF's Llama tokenizers
-        if (type(token) is str and token.startswith(SPIECE_UNDERLINE)
-                or token == "<0x20>"):
+        # Add a space if SPIECE_UNDERLINE prefix or "<0x20>"
+        if (isinstance(token, str) and token.startswith(SPIECE_UNDERLINE)) or token == "<0x20>":
             return " " + string
-
         return string
 
-    def change_decoder(
-        decoder: Callable[[list[int]],
-                          str]) -> Callable[[list[int]], list[str]]:
-        """Sync vLLM's decoder with the outlines by returning list."""
-
-        def new_decoder(inp_tokens: list[int]) -> list[str]:
-            if (isinstance(inp_tokens, list) and len(inp_tokens) == 1
-                    and isinstance(inp_tokens[0], list)):
+    # Only wrap decode method if not already wrapped
+    def _change_decoder(decoder: Callable[[list[int]], str]) -> Callable[[list[int]], list[str]]:
+        def new_decoder(inp_tokens):
+            # Flatten [[ids]] to [ids], as in original, to save a list scan
+            if isinstance(inp_tokens, list) and len(inp_tokens) == 1 and isinstance(inp_tokens[0], list):
                 inp_tokens = inp_tokens[0]
+            # decoder always returns str, wrap in list
             return [decoder(inp_tokens)]
-
         return new_decoder
 
-    tokenizer.convert_token_to_string = convert_token_to_string
-    tokenizer.decode = change_decoder(tokenizer.decode)
-    setattr(tokenizer, "_outlines_adapted", True)  # noqa: B010
-
+    setattr(tokenizer, "convert_token_to_string", convert_token_to_string)
+    tokenizer.decode = _change_decoder(tokenizer.decode)
+    setattr(tokenizer, "_outlines_adapted", True)
     return tokenizer
+
+SPIECE_UNDERLINE = "\u2581"
