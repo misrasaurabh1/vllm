@@ -194,11 +194,14 @@ class ExpertsInt8MoEMethod(FusedMoEMethodBase):
 
 
 def quantize_in_place_and_get_scales(weight: torch.Tensor) -> torch.Tensor:
-    vmax = torch.iinfo(torch.int8).max
-    scales = (torch.max(torch.abs(weight), dim=1, keepdim=True)[0] / vmax)
+    # Use .amax instead of .max for performance.
+    scales = weight.abs().amax(dim=1, keepdim=True) / VMAX
 
+    # All in-place: scaling, rounding, clipping
     weight.div_(scales)
     weight.round_()
-    weight.clamp_(-vmax, vmax)
+    weight.clamp_(-VMAX, VMAX)
 
     return scales
+
+VMAX = torch.iinfo(torch.int8).max
