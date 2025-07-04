@@ -42,7 +42,7 @@ class HpuPlatform(Platform):
 
     @classmethod
     def inference_mode(cls):
-        return torch.no_grad()
+        return _no_grad()
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
@@ -104,3 +104,5 @@ class HpuPlatform(Platform):
     @classmethod
     def get_device_communicator_cls(cls) -> str:
         return "vllm.distributed.device_communicators.hpu_communicator.HpuCommunicator"  # noqa
+
+_no_grad = torch.no_grad
