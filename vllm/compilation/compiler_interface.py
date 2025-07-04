@@ -18,6 +18,9 @@ from vllm.config import VllmConfig
 from vllm.utils import is_torch_equal_or_newer
 
 from .inductor_pass import pass_context
+import functools
+import json
+from torch._inductor.codecache import torch_key
 
 
 class CompilerInterface:
@@ -147,17 +150,15 @@ class AlwaysHitShapeEnv:
 
 
 def get_inductor_factors() -> list[Any]:
-    factors: list[Any] = []
-    # summarize system state
-    from torch._inductor.codecache import CacheBase
-    system_factors = CacheBase.get_system()
-    factors.append(system_factors)
-
-    # summarize pytorch state
-    from torch._inductor.codecache import torch_key
+    """
+    Summarizes system and pytorch state factors for inductor
+    Returns:
+        factors (list): [system_factors, torch_factors]
+    """
+    # Use pre-imported CacheBase and torch_key, avoid repeated imports/hot path
+    system_factors = get_system()
     torch_factors = torch_key()
-    factors.append(torch_factors)
-    return factors
+    return [system_factors, torch_factors]
 
 
 class InductorStandaloneAdaptor(CompilerInterface):
@@ -546,6 +547,47 @@ def set_inductor_config(config, runtime_shape):
         config["max_autotune"] = True
         config["coordinate_descent_tuning"] = True
 
+# Pre-cache the .__name__ attribute to avoid repeated getattr lookups
+def _get_device_name(device_properties):
+    try:
+        return device_properties.name
+    except AttributeError:
+        return getattr(device_properties, "gcnArchName", None)
+
+
+@functools.lru_cache(maxsize=None)
+def get_system() -> dict[str, object]:
+    try:
+        from triton.compiler.compiler import triton_key
+        triton_version = triton_key()
+    except ModuleNotFoundError:
+        triton_version = None
+
+    # Preallocate expected result. Only write minimal keys required.
+    system = {
+        "device": {"name": None},
+        "version": {
+            "triton": triton_version,
+        },
+    }
+    try:
+        device_properties = get_device_properties(current_device())
+        if version_cuda:
+            system["device"]["name"] = _get_device_name(device_properties)
+            system["version"]["cuda"] = version_cuda
+        else:
+            system["device"]["name"] = getattr(device_properties, "gcnArchName", None)
+            system["version"]["hip"] = version_hip
+    except (AssertionError, RuntimeError):
+        # If cuda is not installed or call fails, none of the above config is relevant.
+        system = {}
+
+    # Hash system dictionary
+    system["hash"] = hashlib.sha256(
+        json.dumps(system, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return system
+
 
 class EagerAdaptor(CompilerInterface):
     name = "eager"
@@ -562,3 +604,13 @@ class EagerAdaptor(CompilerInterface):
         # we don't need to compile the graph, just return the graph itself.
         # It does not support caching, return None for the handle.
         return graph, None
+
+cuda = torch.cuda
+
+get_device_properties = cuda.get_device_properties
+
+current_device = cuda.current_device
+
+version_cuda = getattr(torch.version, "cuda", None)
+
+version_hip = getattr(torch.version, "hip", None)
