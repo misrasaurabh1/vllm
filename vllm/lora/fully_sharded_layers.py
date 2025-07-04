@@ -41,47 +41,58 @@ def _mcp_apply(x, bias, layer: ColumnParallelLinearWithLoRA):
     For `ColumnParallelLinearWithLoRA` or classes that inherit from 
     `ColumnParallelLinearWithLoRA`, they share the same `apply` logic.
     """
-    assert (layer.n_slices == len(layer.lora_a_stacked) == len(
-        layer.lora_b_stacked) == len(layer.output_slices))
-    if layer.lora_bias_stacked is not None:
-        assert layer.n_slices == len(layer.lora_bias_stacked)
+    # Fast, single assert batch
+    nslices = layer.n_slices
+    la_a = layer.lora_a_stacked
+    la_b = layer.lora_b_stacked
+    out_slices = layer.output_slices
+    la_bias = layer.lora_bias_stacked
 
+    assert nslices == len(la_a) == len(la_b) == len(out_slices)
+    if la_bias is not None:
+        assert nslices == len(la_bias)
+
+    # Move view/shape ops up to avoid repeated shape calculation
+    orig_shape = x.shape
+    x_2d = x.view(-1, x.shape[-1])
+    # call apply first (possibly fused), then view
     output = layer.base_layer.quant_method.apply(layer.base_layer, x, bias)
+    output_2d = output.view(-1, output.shape[-1])
 
-    x = x.view(-1, x.shape[-1])
-    output, out_orig_shape = output.view(-1, output.shape[-1]), output.shape
+    # Use precomputed shapes and dtype directly; avoid multiple shape/dtype queries
+    nrows = x_2d.shape[0]
+    out_dim = la_a[0].shape[2]
+    buffers_shape = (nslices, nrows, out_dim)
+    # Allocate tensor in a single call
+    buffers = torch.zeros(buffers_shape, dtype=torch.float32, device=x_2d.device)
 
-    # Since communication is needed, the buffer is directly initialized as a
-    # tensor rather than a tuple of tensor.
-    buffers = torch.zeros(
-        (layer.n_slices, x.shape[0], layer.lora_a_stacked[0].shape[2]),
-        dtype=torch.float32,
-        device=x.device,
-    )
+    # Add shrink (likely fused custom op)
+    shrunk_buffers = layer.punica_wrapper.add_shrink(buffers, x_2d, la_a, 1.0)
 
-    shrunk_buffers: Optional[torch.Tensor] = layer.punica_wrapper.add_shrink(
-        buffers, x, layer.lora_a_stacked, 1.0)
-
+    # Only update buffers if really required by platform
     if not current_platform.can_update_inplace():
         buffers = shrunk_buffers
 
+    # All-gather: possibly expensive, so do as late as needed
     buffers = tensor_model_parallel_all_gather(buffers)
 
-    lora_output: Optional[torch.Tensor] = layer.punica_wrapper.add_expand(
-        output,
+    # Add expand is likely a fused multi-output operator
+    lora_output = layer.punica_wrapper.add_expand(
+        output_2d,
         buffers,
-        layer.lora_b_stacked,
-        layer.lora_bias_stacked,
-        layer.output_slices,
+        la_b,
+        la_bias,
+        out_slices,
         offset_start=0,
         add_input=True)
 
+    # Only reassign output if platform does not support inplace update
     if not current_platform.can_update_inplace():
-        output = lora_output
+        output_2d = lora_output
 
-    output = output.view(*out_orig_shape)
-    # now have column partitioned and packed output
-    return output
+    # Single view back to original shape
+    output_final = output_2d.view(*output.shape)
+    return output_final
 
 
 # these layers are based on the tensor parallelism strategy given in

@@ -176,8 +176,10 @@ class Platform:
         # Treat empty device control env var as unset. This is a valid
         # configuration in Ray setups where the engine is launched in
         # a CPU-only placement group located on a GPU node.
-        if cls.device_control_env_var in os.environ and os.environ[
-                cls.device_control_env_var] != "":
+        if (
+            cls.device_control_env_var in os.environ
+            and os.environ[cls.device_control_env_var] != ""
+        ):
             device_ids = os.environ[cls.device_control_env_var].split(",")
             physical_device_id = device_ids[device_id]
             return int(physical_device_id)
@@ -185,10 +187,16 @@ class Platform:
             return device_id
 
     @classmethod
-    def get_attn_backend_cls(cls, selected_backend: _Backend, head_size: int,
-                             dtype: torch.dtype, kv_cache_dtype: Optional[str],
-                             block_size: int, use_v1: bool,
-                             use_mla: bool) -> str:
+    def get_attn_backend_cls(
+        cls,
+        selected_backend: _Backend,
+        head_size: int,
+        dtype: torch.dtype,
+        kv_cache_dtype: Optional[str],
+        block_size: int,
+        use_v1: bool,
+        use_mla: bool,
+    ) -> str:
         """Get the attention backend class of a device."""
         return ""
 
@@ -301,9 +309,9 @@ class Platform:
         torch.cuda.set_device(device)
 
     @classmethod
-    def pre_register_and_update(cls,
-                                parser: Optional[FlexibleArgumentParser] = None
-                                ) -> None:
+    def pre_register_and_update(
+        cls, parser: Optional[FlexibleArgumentParser] = None
+    ) -> None:
         """
         Do some pre-registration or update action for the current platform.
 
@@ -346,11 +354,14 @@ class Platform:
         """
         Verify whether the quantization is supported by the current platform.
         """
-        if cls.supported_quantization and \
-            quant not in cls.supported_quantization:
+        if (
+            cls.supported_quantization
+            and quant not in cls.supported_quantization
+        ):
             raise ValueError(
                 f"{quant} quantization is currently not supported in "
-                f"{cls.device_name}.")
+                f"{cls.device_name}."
+            )
 
     @classmethod
     def get_cpu_architecture(cls) -> CpuArchEnum:
@@ -375,15 +386,17 @@ class Platform:
         if in_wsl():
             # Pinning memory in WSL is not supported.
             # https://docs.nvidia.com/cuda/wsl-user-guide/index.html#known-limitations-for-linux-cuda-applications
-            logger.warning("Using 'pin_memory=False' as WSL is detected. "
-                           "This may slow down the performance.")
+            logger.warning(
+                "Using 'pin_memory=False' as WSL is detected. "
+                "This may slow down the performance."
+            )
             return False
         return True
 
     @classmethod
-    def get_current_memory_usage(cls,
-                                 device: Optional[torch.types.Device] = None
-                                 ) -> float:
+    def get_current_memory_usage(
+        cls, device: Optional[torch.types.Device] = None
+    ) -> float:
         """
         Return the memory usage in bytes.
         """
@@ -470,9 +483,11 @@ class Platform:
         from vllm.config import get_current_vllm_config
 
         parallel_config = get_current_vllm_config().parallel_config
-        return (envs.VLLM_USE_V1
-                or parallel_config.distributed_executor_backend
-                == "external_launcher")
+        return (
+            envs.VLLM_USE_V1
+            or parallel_config.distributed_executor_backend
+            == "external_launcher"
+        )
 
     @classmethod
     def supports_v1(cls, model_config: ModelConfig) -> bool:
@@ -509,8 +524,11 @@ class Platform:
         if device is not None and hasattr(device, key):
             return getattr(device, key)
         else:
-            logger.warning("Current platform %s does not have '%s'" \
-            " attribute.", self.device_type, key)
+            logger.warning(
+                "Current platform %s does not have '%s' attribute.",
+                self.device_type,
+                key,
+            )
             return None
 
     @classmethod
@@ -525,7 +543,9 @@ class Platform:
         """
         Get piecewise backend class for piecewise graph.
         """
-        return "vllm.compilation.base_piecewise_backend.AbstractPiecewiseBackend"  # noqa
+        return (
+            "vllm.compilation.base_piecewise_backend.AbstractPiecewiseBackend"  # noqa
+        )
 
     @classmethod
     def stateless_init_device_torch_dist_pg(
