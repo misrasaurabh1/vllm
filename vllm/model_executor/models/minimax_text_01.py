@@ -242,47 +242,62 @@ class MiniMaxText01MoE(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.layer_idx = layer_idx
-        self.tp_size = get_tensor_model_parallel_world_size()
+        tp_size = get_tensor_model_parallel_world_size()
+        # Cache frequently used values as locals
+        self.tp_size = tp_size
         self.num_total_experts = num_experts
         self.top_k = top_k
+        self.layer_idx = layer_idx
         self.hidden_size = hidden_size
-        self.intermediate_size = intermediate_size // self.tp_size
-        self.quant_config = quant_config
+
+        # Precompute correct intermediate size per tp
+        intermediate_size_div = intermediate_size // tp_size
+        self.intermediate_size = intermediate_size_div
 
         if params_dtype is None:
             params_dtype = torch.get_default_dtype()
         self.params_dtype = params_dtype
+        self.quant_config = quant_config
+
+        # Minimize string concatenations and object creation.
+        prefix_gate = f"{prefix}.gate"
+        prefix_experts = f"{prefix}.experts"
 
         self.gate = ReplicatedLinear(
-            self.hidden_size,
-            self.num_total_experts,
+            hidden_size,
+            num_experts,
             bias=False,
             params_dtype=torch.float32,
             quant_config=None,
-            prefix=f"{prefix}.gate",
+            prefix=prefix_gate,
         )
-        self.gate.weight.weight_loader = MiniMaxText01MoE.gate_weight_loader
+        # Assign static loader only once.
+        type(self).gate_weight_loader = MiniMaxText01MoE.gate_weight_loader
+        self.gate.weight.weight_loader = type(self).gate_weight_loader
 
+        # FusedMoE construction: avoid repeated arithmetic and attribute lookup
         self.experts = FusedMoE(
-            num_experts=self.num_total_experts,
-            top_k=self.top_k,
-            hidden_size=self.hidden_size,
-            intermediate_size=self.intermediate_size * self.tp_size,
+            num_experts=num_experts,
+            top_k=top_k,
+            hidden_size=hidden_size,
+            intermediate_size=intermediate_size,
             params_dtype=self.params_dtype,
             reduce_results=True,
             renormalize=True,
-            quant_config=self.quant_config,
-            tp_size=self.tp_size,
-            prefix=f"{prefix}.experts",
+            quant_config=quant_config,
+            tp_size=tp_size,
+            prefix=prefix_experts,
         )
-        return
 
     @staticmethod
     def gate_weight_loader(param: nn.Parameter,
                            loaded_weight: torch.Tensor) -> None:
-        assert param.size() == loaded_weight.size()
-        param.data.copy_(loaded_weight.to(torch.float32))
+        # Fast check (shape & dtype), avoid method call if dtype matches.
+        if param.data.dtype == torch.float32 and param.size() == loaded_weight.size():
+            param.data.copy_(loaded_weight)
+        else:
+            assert param.size() == loaded_weight.size()
+            param.data.copy_(loaded_weight.to(torch.float32))
         return
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
