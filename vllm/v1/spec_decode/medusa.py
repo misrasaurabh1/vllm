@@ -42,10 +42,19 @@ class MedusaProposer:
         # Generate blocks and compute logits
         blocks = self.model(target_hidden_states)
         logits = self.model.compute_logits(blocks, None)
-
-        # Get draft tokens and transpose the result
-        draft_tokens = [logit.argmax(dim=-1).tolist() for logit in logits]
-        return [list(row) for row in zip(*draft_tokens)]
+        
+        # Optimized: stack logits and perform argmax in a single batched operation if possible
+        try:
+            logits_tensor = torch.stack(logits)  # [B, ..., vocab]
+            # Will argmax along the last dimension (assuming logits last dim is vocab size)
+            draft_tokens_tensor = logits_tensor.argmax(dim=-1) # shape: [B, ...]
+            # Transpose so sequences are in columns, as original method uses zip
+            transposed = draft_tokens_tensor.T.tolist()
+            return transposed
+        except Exception:
+            # If stacking fails (logits shapes differ), fallback to original slow route
+            draft_tokens = [logit.argmax(dim=-1).tolist() for logit in logits]
+            return [list(row) for row in zip(*draft_tokens)]
 
     def load_model(self, target_model: nn.Module) -> None:
         from vllm.compilation.backends import set_model_tag
