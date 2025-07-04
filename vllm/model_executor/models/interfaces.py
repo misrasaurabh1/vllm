@@ -15,6 +15,7 @@ from vllm.model_executor.layers.quantization.base_config import (
 from vllm.utils import supports_kw
 
 from .interfaces_base import is_pooling_model
+from vllm.config import VllmConfig
 
 if TYPE_CHECKING:
     from vllm.attention import AttentionMetadata
@@ -597,16 +598,16 @@ class SupportsQuant:
     @staticmethod
     def _find_quant_config(*args, **kwargs) -> Optional[QuantizationConfig]:
         """Find quant config passed through model constructor args"""
-        from vllm.config import VllmConfig  # avoid circular import
-
-        args_values = list(args) + list(kwargs.values())
-        for arg in args_values:
+        for arg in args:
             if isinstance(arg, VllmConfig):
                 return arg.quant_config
-
             if isinstance(arg, QuantizationConfig):
                 return arg
-
+        for arg in kwargs.values():
+            if isinstance(arg, VllmConfig):
+                return arg.quant_config
+            if isinstance(arg, QuantizationConfig):
+                return arg
         return None
 
 
