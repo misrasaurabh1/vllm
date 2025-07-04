@@ -7,6 +7,9 @@ from typing import TYPE_CHECKING, Any, Optional, TypeVar
 import torch
 import torch.nn as nn
 
+from vllm.config import VllmConfig
+from vllm.model_executor.layers.pooler import PoolingType
+
 from .interfaces_base import VllmModelForPooling, is_pooling_model
 
 if TYPE_CHECKING:
@@ -23,12 +26,12 @@ _GENERATE_SUFFIXES = [
 
 
 def _get_pooling_model_name(orig_model_name: str, pooling_suffix: str) -> str:
-    model_name = orig_model_name
-
+    """Remove only the first matching trailing suffix from _GENERATE_SUFFIXES, for speed."""
     for generate_suffix in _GENERATE_SUFFIXES:
-        model_name = model_name.removesuffix(generate_suffix)
-
-    return model_name + pooling_suffix
+        if orig_model_name.endswith(generate_suffix):
+            orig_model_name = orig_model_name[: -len(generate_suffix)]
+            break
+    return orig_model_name + pooling_suffix
 
 
 def _create_pooling_model_cls(
@@ -38,15 +41,13 @@ def _create_pooling_model_cls(
     default_normalize: bool,
     default_softmax: bool,
 ) -> _T:
-    # Lazy import
-    from vllm.config import VllmConfig
+    # Lazy import for circular/expensive dependencies
     from vllm.model_executor.layers.pooler import Pooler, PoolerOutput
     from vllm.model_executor.pooling_metadata import PoolingMetadata
 
     from .utils import AutoWeightsLoader, WeightsMapper
 
     class ModelForPooling(orig_cls, VllmModelForPooling):
-
         def __init__(
             self,
             *,
@@ -81,11 +82,12 @@ def _create_pooling_model_cls(
             return self._pooler(hidden_states, pooling_metadata)
 
         def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
-            # TODO: Support uninitialized params tracking
-
             # We have deleted this attribute, so don't load it
-            weights = ((name, data) for name, data in weights
-                       if not name.startswith("lm_head."))
+            weights = (
+                (name, data)
+                for name, data in weights
+                if not name.startswith("lm_head.")
+            )
 
             # If `*ForCausalLM` defines `load_weights` on the inner model
             # and there are no other inner modules with parameters,
@@ -94,7 +96,8 @@ def _create_pooling_model_cls(
                 # Whether only `self.model` contains parameters
                 model_is_only_param = all(
                     name == "model" or next(child.parameters(), None) is None
-                    for name, child in self.named_children())
+                    for name, child in self.named_children()
+                )
 
                 if model_is_only_param:
                     mapper = WeightsMapper(orig_to_new_prefix={"model.": ""})
@@ -139,8 +142,9 @@ def as_embedding_model(cls: _T) -> _T:
         default_normalize=True,
         default_softmax=False,
     )
-    ModelForEmbedding.__name__ = \
-        _get_pooling_model_name(cls.__name__, "ForEmbedding")
+    ModelForEmbedding.__name__ = _get_pooling_model_name(
+        cls.__name__, "ForEmbedding"
+    )
 
     return ModelForEmbedding  # type: ignore
 
@@ -162,7 +166,6 @@ def as_classification_model(cls: _T) -> _T:
         return cls
 
     # Lazy import
-    from vllm.config import VllmConfig
     from vllm.model_executor.layers.linear import RowParallelLinear
     from vllm.model_executor.layers.pooler import PoolingType
     from vllm.sequence import IntermediateTensors
@@ -177,7 +180,6 @@ def as_classification_model(cls: _T) -> _T:
     )
 
     class ModelForClassification(ModelForPooling):
-
         def __init__(
             self,
             *,
@@ -190,13 +192,14 @@ def as_classification_model(cls: _T) -> _T:
             config = vllm_config.model_config.hf_config
             quant_config = vllm_config.quant_config
 
-            self.score = RowParallelLinear(config.hidden_size,
-                                           config.num_labels,
-                                           quant_config=quant_config,
-                                           input_is_parallel=False,
-                                           bias=False,
-                                           prefix=maybe_prefix(
-                                               prefix, "score"))
+            self.score = RowParallelLinear(
+                config.hidden_size,
+                config.num_labels,
+                quant_config=quant_config,
+                input_is_parallel=False,
+                bias=False,
+                prefix=maybe_prefix(prefix, "score"),
+            )
 
         def forward(
             self,
@@ -205,15 +208,15 @@ def as_classification_model(cls: _T) -> _T:
             intermediate_tensors: Optional[IntermediateTensors] = None,
             inputs_embeds: Optional[torch.Tensor] = None,
         ) -> torch.Tensor:
-            hidden_states = super().forward(input_ids, positions,
-                                            intermediate_tensors,
-                                            inputs_embeds)
+            hidden_states = super().forward(
+                input_ids, positions, intermediate_tensors, inputs_embeds
+            )
             logits, _ = self.score(hidden_states)
             return logits
 
-
-    ModelForClassification.__name__ = \
-        _get_pooling_model_name(cls.__name__, "ForClassification")
+    ModelForClassification.__name__ = _get_pooling_model_name(
+        cls.__name__, "ForClassification"
+    )
 
     return ModelForClassification  # type: ignore
 
@@ -242,7 +245,6 @@ def as_reward_model(cls: _T) -> _T:
         default_softmax=False,
     )
 
-    ModelForReward.__name__ = \
-        _get_pooling_model_name(cls.__name__, "ForReward")
+    ModelForReward.__name__ = _get_pooling_model_name(cls.__name__, "ForReward")
 
     return ModelForReward  # type: ignore
