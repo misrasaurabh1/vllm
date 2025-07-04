@@ -43,10 +43,13 @@ class ExpertsInt8Config(QuantizationConfig):
 
     def get_quant_method(self, layer: torch.nn.Module,
                          prefix: str) -> Optional["QuantizeMethodBase"]:
-        if isinstance(layer, LinearBase):
+        # Use local variable for isinstance and short-circuit
+        layer_type = type(layer)
+        if layer_type is LinearBase:
             return UnquantizedLinearMethod()
-        elif isinstance(layer, FusedMoE):
+        if layer_type is FusedMoE:
             return ExpertsInt8MoEMethod(self)
+        # if neither type, return None
         return None
 
 
