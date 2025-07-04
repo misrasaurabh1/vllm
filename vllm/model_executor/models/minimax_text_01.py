@@ -345,6 +345,13 @@ class MiniMaxText01LinearAttention(nn.Module):
     ) -> None:
         super().__init__()
 
+        # Cache world size and rank locally to reduce repeated lookups
+        tp_size = get_tensor_model_parallel_world_size()
+        tp_rank = get_tensor_model_parallel_rank()
+        self.tp_size = tp_size
+        self.tp_rank = tp_rank
+
+        # Direct assignments
         self.layer_idx = layer_idx
         self.BLOCK = block_size
         self.hidden_size = hidden_size
@@ -352,54 +359,67 @@ class MiniMaxText01LinearAttention(nn.Module):
         self.head_dim = head_dim
         self.total_num_heads = num_heads
         self.hidden_inner_size = hidden_inner_size
-        self.tp_size = get_tensor_model_parallel_world_size()
-        self.tp_rank = get_tensor_model_parallel_rank()
 
-        assert self.total_num_heads % self.tp_size == 0
-        self.tp_heads = self.total_num_heads // self.tp_size
-        self.qkv_size = self.num_heads * self.head_dim
-        self.tp_hidden = self.head_dim * self.tp_heads
+        # Calculate number of heads per tensor-parallel shard
+        assert num_heads % tp_size == 0, "Number of heads must be divisible by tp_size"
+        tp_heads = num_heads // tp_size
+        self.tp_heads = tp_heads
 
+        # Calculate hidden sizes per shard
+        self.qkv_size = num_heads * head_dim
+        self.tp_hidden = head_dim * tp_heads
+
+        hidden_inner_size3 = hidden_inner_size * 3
+        prefix_qkv = f"{prefix}.qkv_proj"
+        prefix_output_gate = f"{prefix}.output_gate"
+        prefix_out_proj = f"{prefix}.out_proj"
+
+        # Construct layers (avoid repeated string formatting)
         self.qkv_proj = ColumnParallelLinear(
             hidden_size,
-            self.hidden_inner_size * 3,
+            hidden_inner_size3,
             bias=False,
             quant_config=quant_config,
-            prefix=f"{prefix}.qkv_proj",
+            prefix=prefix_qkv,
         )
         self.output_gate = ColumnParallelLinear(
             hidden_size,
-            self.hidden_inner_size,
+            hidden_inner_size,
             bias=False,
             quant_config=quant_config,
-            prefix=f"{prefix}.output_gate",
+            prefix=prefix_output_gate,
         )
         self.out_proj = RowParallelLinear(
-            self.hidden_inner_size,
+            hidden_inner_size,
             hidden_size,
             bias=False,
             quant_config=quant_config,
-            prefix=f"{prefix}.out_proj",
+            prefix=prefix_out_proj,
         )
         self.norm = MiniMaxText01RMSNormTP(
-            self.hidden_inner_size,
+            hidden_inner_size,
             eps=1e-5,
         )
 
-        slope_rate = MiniMaxText01LinearAttention._build_slope_tensor(
-            self.num_heads)
+        # Efficient slope tensor computation and slicing
+        slope_rate = MiniMaxText01LinearAttention._build_slope_tensor(num_heads)
+        # Precompute factor for slope_rate
         if num_hidden_layer <= 1:
-            self.slope_rate = slope_rate * (1 + 1e-5)
+            slope_factor = 1 + 1e-5
         else:
-            self.slope_rate = slope_rate * (1 - layer_idx /
-                                            (num_hidden_layer - 1) + 1e-5)
-        self.tp_slope = self.slope_rate[self.tp_rank *
-                                        self.tp_heads:(self.tp_rank + 1) *
-                                        self.tp_heads].contiguous()
+            slope_factor = 1 - layer_idx / (num_hidden_layer - 1) + 1e-5
+
+        slope_rate = slope_rate * slope_factor
+        self.slope_rate = slope_rate
+
+        start = tp_rank * tp_heads
+        end = start + tp_heads
+        self.tp_slope = slope_rate[start:end].contiguous()
 
     @staticmethod
     def weight_direct_load(param: torch.Tensor,
                            loaded_weight: torch.Tensor) -> None:
+        # Direct assignment; leave as-is.
         assert param.size() == loaded_weight.size()
         param.data.copy_(loaded_weight)
         return
