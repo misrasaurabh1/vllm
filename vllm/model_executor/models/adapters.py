@@ -7,6 +7,11 @@ from typing import TYPE_CHECKING, Any, Optional, TypeVar
 import torch
 import torch.nn as nn
 
+from vllm.config import VllmConfig
+from vllm.model_executor.layers.pooler import PoolerOutput, PoolingType
+from vllm.model_executor.pooling_metadata import PoolingMetadata
+from vllm.sequence import IntermediateTensors
+
 from .interfaces_base import VllmModelForPooling, is_pooling_model
 
 if TYPE_CHECKING:
@@ -23,11 +28,15 @@ _GENERATE_SUFFIXES = [
 
 
 def _get_pooling_model_name(orig_model_name: str, pooling_suffix: str) -> str:
+    """
+    Remove a recognized generate LM suffix (the first match at the end)
+    and append pooling_suffix.
+    """
     model_name = orig_model_name
-
     for generate_suffix in _GENERATE_SUFFIXES:
-        model_name = model_name.removesuffix(generate_suffix)
-
+        if model_name.endswith(generate_suffix):
+            model_name = model_name[: -len(generate_suffix)]
+            break  # Only remove one suffix for efficiency
     return model_name + pooling_suffix
 
 
@@ -38,15 +47,12 @@ def _create_pooling_model_cls(
     default_normalize: bool,
     default_softmax: bool,
 ) -> _T:
-    # Lazy import
-    from vllm.config import VllmConfig
-    from vllm.model_executor.layers.pooler import Pooler, PoolerOutput
-    from vllm.model_executor.pooling_metadata import PoolingMetadata
+    # Lazy import (cannot move due to dependencies/recursion)
+    from vllm.model_executor.layers.pooler import Pooler
 
     from .utils import AutoWeightsLoader, WeightsMapper
 
     class ModelForPooling(orig_cls, VllmModelForPooling):
-
         def __init__(
             self,
             *,
@@ -76,30 +82,37 @@ def _create_pooling_model_cls(
         def pooler(
             self,
             hidden_states: torch.Tensor,
-            pooling_metadata: PoolingMetadata,
-        ) -> PoolerOutput:
+            pooling_metadata: "PoolingMetadata",
+        ) -> "PoolerOutput":
             return self._pooler(hidden_states, pooling_metadata)
 
         def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
             # TODO: Support uninitialized params tracking
 
             # We have deleted this attribute, so don't load it
-            weights = ((name, data) for name, data in weights
-                       if not name.startswith("lm_head."))
+            weights = (
+                (name, data)
+                for name, data in weights
+                if not name.startswith("lm_head.")
+            )
 
             # If `*ForCausalLM` defines `load_weights` on the inner model
             # and there are no other inner modules with parameters,
             # we support loading from both `*Model` and `*ForCausalLM`
             if hasattr(self, "model") and hasattr(self.model, "load_weights"):
                 # Whether only `self.model` contains parameters
-                model_is_only_param = all(
-                    name == "model" or next(child.parameters(), None) is None
-                    for name, child in self.named_children())
+                model_is_only_param = True
+                for name, child in self.named_children():
+                    if (
+                        name != "model"
+                        and next(child.parameters(), None) is not None
+                    ):
+                        model_is_only_param = False
+                        break
 
                 if model_is_only_param:
                     mapper = WeightsMapper(orig_to_new_prefix={"model.": ""})
                     weights = mapper.apply(weights)
-
                     loaded_params = self.model.load_weights(weights)
                     loaded_params = {f"model.{name}" for name in loaded_params}
                     return loaded_params
@@ -139,8 +152,9 @@ def as_embedding_model(cls: _T) -> _T:
         default_normalize=True,
         default_softmax=False,
     )
-    ModelForEmbedding.__name__ = \
-        _get_pooling_model_name(cls.__name__, "ForEmbedding")
+    ModelForEmbedding.__name__ = _get_pooling_model_name(
+        cls.__name__, "ForEmbedding"
+    )
 
     return ModelForEmbedding  # type: ignore
 
@@ -162,10 +176,8 @@ def as_classification_model(cls: _T) -> _T:
         return cls
 
     # Lazy import
-    from vllm.config import VllmConfig
     from vllm.model_executor.layers.linear import RowParallelLinear
     from vllm.model_executor.layers.pooler import PoolingType
-    from vllm.sequence import IntermediateTensors
 
     from .utils import maybe_prefix
 
@@ -177,7 +189,6 @@ def as_classification_model(cls: _T) -> _T:
     )
 
     class ModelForClassification(ModelForPooling):
-
         def __init__(
             self,
             *,
@@ -190,31 +201,32 @@ def as_classification_model(cls: _T) -> _T:
             config = vllm_config.model_config.hf_config
             quant_config = vllm_config.quant_config
 
-            self.score = RowParallelLinear(config.hidden_size,
-                                           config.num_labels,
-                                           quant_config=quant_config,
-                                           input_is_parallel=False,
-                                           bias=False,
-                                           prefix=maybe_prefix(
-                                               prefix, "score"))
+            self.score = RowParallelLinear(
+                config.hidden_size,
+                config.num_labels,
+                quant_config=quant_config,
+                input_is_parallel=False,
+                bias=False,
+                prefix=maybe_prefix(prefix, "score"),
+            )
 
         def forward(
             self,
             input_ids: torch.Tensor,
             positions: torch.Tensor,
-            intermediate_tensors: Optional[IntermediateTensors] = None,
+            intermediate_tensors: Optional["IntermediateTensors"] = None,
             inputs_embeds: Optional[torch.Tensor] = None,
         ) -> torch.Tensor:
-            hidden_states = super().forward(input_ids, positions,
-                                            intermediate_tensors,
-                                            inputs_embeds)
+            hidden_states = super().forward(
+                input_ids, positions, intermediate_tensors, inputs_embeds
+            )
             logits, _ = self.score(hidden_states)
             return logits
 
-
-    ModelForClassification.__name__ = \
-        _get_pooling_model_name(cls.__name__, "ForClassification")
-
+    # Assign improved pooling name efficiently
+    ModelForClassification.__name__ = _get_pooling_model_name(
+        cls.__name__, "ForClassification"
+    )
     return ModelForClassification  # type: ignore
 
 
@@ -242,7 +254,6 @@ def as_reward_model(cls: _T) -> _T:
         default_softmax=False,
     )
 
-    ModelForReward.__name__ = \
-        _get_pooling_model_name(cls.__name__, "ForReward")
+    ModelForReward.__name__ = _get_pooling_model_name(cls.__name__, "ForReward")
 
     return ModelForReward  # type: ignore
