@@ -58,18 +58,31 @@ class SwiGLUActivation(nn.Module):
 
 
 def _get_alibi_slopes(n):
-
+    if n in _alibi_slopes_cache:
+        return _alibi_slopes_cache[n]
+    
+    # Fast-path for power-of-2 only, avoids closures
     def get_slopes_power_of_2(n):
-        start = 2**(-(2**-(math.log2(n) - 3)))
+        # Avoid calling math.log2 more than needed
+        log2n = math.log2(n)
+        start = 2 ** (-(2 ** -(log2n - 3)))
         ratio = start
-        return [start * ratio**i for i in range(n)]
+        # Avoid unnecessary list multiplication or power
+        # Use math.pow for speed in tight loops
+        return [start * math.pow(ratio, i) for i in range(n)]
 
-    if math.log2(n).is_integer():
-        return get_slopes_power_of_2(n)
+    log2n = math.log2(n)
+    if log2n.is_integer():
+        result = get_slopes_power_of_2(n)
     else:
-        closest_power_of_2 = 2**math.floor(math.log2(n))
-        return (get_slopes_power_of_2(closest_power_of_2) + _get_alibi_slopes(
-            2 * closest_power_of_2)[0::2][:n - closest_power_of_2])
+        closest_power_of_2 = 2 ** math.floor(log2n)
+        # Save and re-use slopes for powers of 2 and greater sizes
+        slopes1 = _get_alibi_slopes(closest_power_of_2)
+        slopes2_full = _get_alibi_slopes(2 * closest_power_of_2)
+        slopes2_skip = slopes2_full[0::2]
+        result = slopes1 + slopes2_skip[:n - closest_power_of_2]
+    _alibi_slopes_cache[n] = result
+    return result
 
 
 class JAISAttention(nn.Module):
@@ -371,3 +384,5 @@ class JAISLMHeadModel(nn.Module, SupportsPP):
             weight_loader(param, loaded_weight)
             loaded_params.add(name)
         return loaded_params
+
+_alibi_slopes_cache = {}
