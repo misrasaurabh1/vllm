@@ -4,7 +4,7 @@
 import copy
 import math
 from collections.abc import Iterable
-from typing import Optional, Union
+from typing import Dict, Tuple, Optional, Union
 
 import regex as re
 import torch
@@ -352,13 +352,17 @@ class MiniMaxText01LinearAttention(nn.Module):
         self.head_dim = head_dim
         self.total_num_heads = num_heads
         self.hidden_inner_size = hidden_inner_size
-        self.tp_size = get_tensor_model_parallel_world_size()
-        self.tp_rank = get_tensor_model_parallel_rank()
+        # Save value as local instead of multiple attribute lookups
+        tp_size = get_tensor_model_parallel_world_size()
+        tp_rank = get_tensor_model_parallel_rank()
+        self.tp_size = tp_size
+        self.tp_rank = tp_rank
 
-        assert self.total_num_heads % self.tp_size == 0
-        self.tp_heads = self.total_num_heads // self.tp_size
+        assert self.total_num_heads % tp_size == 0
+        tp_heads = self.total_num_heads // tp_size
+        self.tp_heads = tp_heads
         self.qkv_size = self.num_heads * self.head_dim
-        self.tp_hidden = self.head_dim * self.tp_heads
+        self.tp_hidden = self.head_dim * tp_heads
 
         self.qkv_proj = ColumnParallelLinear(
             hidden_size,
@@ -386,16 +390,14 @@ class MiniMaxText01LinearAttention(nn.Module):
             eps=1e-5,
         )
 
-        slope_rate = MiniMaxText01LinearAttention._build_slope_tensor(
-            self.num_heads)
-        if num_hidden_layer <= 1:
-            self.slope_rate = slope_rate * (1 + 1e-5)
-        else:
-            self.slope_rate = slope_rate * (1 - layer_idx /
-                                            (num_hidden_layer - 1) + 1e-5)
-        self.tp_slope = self.slope_rate[self.tp_rank *
-                                        self.tp_heads:(self.tp_rank + 1) *
-                                        self.tp_heads].contiguous()
+        # Cache slope_rate for each (num_heads, num_hidden_layer, layer_idx) tuple to avoid recompute between instances
+        slope_cache_key = (num_heads, num_hidden_layer, layer_idx)
+        slope_rate = self._get_cached_slope_rate(num_heads, num_hidden_layer, layer_idx)
+        self.slope_rate = slope_rate
+        rank = tp_rank
+        heads = tp_heads
+        # Slice for the ranks as tensor is [num_heads, 1, 1]
+        self.tp_slope = slope_rate[rank * heads:(rank + 1) * heads].contiguous()
 
     @staticmethod
     def weight_direct_load(param: torch.Tensor,
@@ -406,24 +408,33 @@ class MiniMaxText01LinearAttention(nn.Module):
 
     @staticmethod
     def _build_slope_tensor(n_attention_heads: int):
+        # Caches computed slopes per n_attention_heads only (for subroutine)
+        if not hasattr(MiniMaxText01LinearAttention._build_slope_tensor, "_power2_cache"):
+            MiniMaxText01LinearAttention._build_slope_tensor._power2_cache = {}
+        power2_cache = MiniMaxText01LinearAttention._build_slope_tensor._power2_cache
+
+        def get_slopes_power_of_2(n):
+            # This is only called for power of 2 n, so cache by n
+            if n in power2_cache:
+                return power2_cache[n]
+            val = 2 ** (-(2 ** -(math.log2(n) - 3)))
+            # Note: ratio and val are always equal so we can combine for efficiency
+            # generate i-th entry as val**(i + 1)
+            ret = [val * (val ** i) for i in range(n)]
+            power2_cache[n] = ret
+            return ret
 
         def get_slopes(n):
-
-            def get_slopes_power_of_2(n):
-                start = 2**(-(2**-(math.log2(n) - 3)))
-                ratio = start
-                return [start * ratio**i for i in range(n)]
-
             if math.log2(n).is_integer():
                 return get_slopes_power_of_2(n)
             else:
-                closest_power_of_2 = 2**math.floor(math.log2(n))
-                return (get_slopes_power_of_2(closest_power_of_2) + get_slopes(
-                    2 * closest_power_of_2)[0::2][:n - closest_power_of_2])
+                closest_power_of_2 = 2 ** math.floor(math.log2(n))
+                first = get_slopes_power_of_2(closest_power_of_2)
+                second = get_slopes(2 * closest_power_of_2)[0::2][:n - closest_power_of_2]
+                return first + second
 
         slopes = torch.tensor(get_slopes(n_attention_heads),
-                              dtype=torch.float32).reshape(
-                                  n_attention_heads, 1, 1)
+                              dtype=torch.float32).reshape(n_attention_heads, 1, 1)
         return slopes
 
     def _prefill_and_mix_infer(self, q, k, v, kv_cache, state_indices_tensor,
@@ -501,6 +512,26 @@ class MiniMaxText01LinearAttention(nn.Module):
         hidden = hidden.to(hidden_states.dtype)
         hidden, _ = self.out_proj(hidden)
         return hidden
+
+    @classmethod
+    def _get_cached_slope_rate(cls, num_heads: int, num_hidden_layer: int, layer_idx: int) -> torch.Tensor:
+        # This cache is class-level and keeps slope rate Tensors by key: (num_heads, num_hidden_layer, layer_idx)
+        cache: Dict[Tuple[int, int, int], torch.Tensor] = getattr(cls, "_slope_tensor_cache", None)
+        if cache is None:
+            cls._slope_tensor_cache = {}
+            cache = cls._slope_tensor_cache
+        key = (num_heads, num_hidden_layer, layer_idx)
+        if key in cache:
+            return cache[key]
+
+        base_slopes = cls._build_slope_tensor(num_heads)
+        # Apply correction as in original code
+        if num_hidden_layer <= 1:
+            slope_rate = base_slopes * (1 + 1e-5)
+        else:
+            slope_rate = base_slopes * (1 - layer_idx / (num_hidden_layer - 1) + 1e-5)
+        cache[key] = slope_rate
+        return slope_rate
 
 
 class MiniMaxText01Attention(nn.Module):
