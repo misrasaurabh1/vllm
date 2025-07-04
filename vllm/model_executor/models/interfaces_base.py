@@ -8,7 +8,10 @@ import torch
 import torch.nn as nn
 from typing_extensions import TypeIs, TypeVar
 
+from vllm.config import VllmConfig
 from vllm.logger import init_logger
+from vllm.model_executor.layers.pooler import PoolerOutput
+from vllm.model_executor.pooling_metadata import PoolingMetadata
 from vllm.utils import supports_kw
 
 if TYPE_CHECKING:
@@ -38,15 +41,13 @@ class VllmModel(Protocol[T_co]):
         self,
         vllm_config: "VllmConfig",
         prefix: str = "",
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def forward(
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-    ) -> T_co:
-        ...
+    ) -> T_co: ...
 
 
 def _check_vllm_model_init(model: Union[type[object], object]) -> bool:
@@ -60,11 +61,13 @@ def _check_vllm_model_forward(model: Union[type[object], object]) -> bool:
         return False
 
     vllm_kws = ("input_ids", "positions")
-    missing_kws = tuple(kw for kw in vllm_kws
-                        if not supports_kw(model_forward, kw))
+    missing_kws = tuple(
+        kw for kw in vllm_kws if not supports_kw(model_forward, kw)
+    )
 
-    if missing_kws and (isinstance(model, type)
-                        and issubclass(model, nn.Module)):
+    if missing_kws and (
+        isinstance(model, type) and issubclass(model, nn.Module)
+    ):
         logger.warning(
             "The model (%s) is missing "
             "vLLM-specific keywords from its `forward` method: %s",
@@ -76,13 +79,11 @@ def _check_vllm_model_forward(model: Union[type[object], object]) -> bool:
 
 
 @overload
-def is_vllm_model(model: type[object]) -> TypeIs[type[VllmModel]]:
-    ...
+def is_vllm_model(model: type[object]) -> TypeIs[type[VllmModel]]: ...
 
 
 @overload
-def is_vllm_model(model: object) -> TypeIs[VllmModel]:
-    ...
+def is_vllm_model(model: object) -> TypeIs[VllmModel]: ...
 
 
 def is_vllm_model(
@@ -106,20 +107,21 @@ class VllmModelForTextGeneration(VllmModel[T], Protocol[T]):
 
 @overload
 def is_text_generation_model(
-        model: type[object]) -> TypeIs[type[VllmModelForTextGeneration]]:
-    ...
+    model: type[object],
+) -> TypeIs[type[VllmModelForTextGeneration]]: ...
 
 
 @overload
 def is_text_generation_model(
-        model: object) -> TypeIs[VllmModelForTextGeneration]:
-    ...
+    model: object,
+) -> TypeIs[VllmModelForTextGeneration]: ...
 
 
 def is_text_generation_model(
     model: Union[type[object], object],
-) -> Union[TypeIs[type[VllmModelForTextGeneration]],
-           TypeIs[VllmModelForTextGeneration]]:
+) -> Union[
+    TypeIs[type[VllmModelForTextGeneration]], TypeIs[VllmModelForTextGeneration]
+]:
     if not is_vllm_model(model):
         return False
 
@@ -142,23 +144,30 @@ class VllmModelForPooling(VllmModel[T], Protocol[T]):
         ...
 
 
-@overload
 def is_pooling_model(model: type[object]) -> TypeIs[type[VllmModelForPooling]]:
-    ...
+    # Optimization: Minimize checks and only call is_vllm_model for instances.
+    if isinstance(model, type):
+        return issubclass(model, VllmModelForPooling)
+    if not is_vllm_model(model):
+        return False
+    return isinstance(model, VllmModelForPooling)
 
 
-@overload
 def is_pooling_model(model: object) -> TypeIs[VllmModelForPooling]:
-    ...
+    # Optimization: Minimize checks and only call is_vllm_model for instances.
+    if isinstance(model, type):
+        return issubclass(model, VllmModelForPooling)
+    if not is_vllm_model(model):
+        return False
+    return isinstance(model, VllmModelForPooling)
 
 
 def is_pooling_model(
     model: Union[type[object], object],
 ) -> Union[TypeIs[type[VllmModelForPooling]], TypeIs[VllmModelForPooling]]:
+    # Optimization: Minimize checks and only call is_vllm_model for instances.
+    if isinstance(model, type):
+        return issubclass(model, VllmModelForPooling)
     if not is_vllm_model(model):
         return False
-
-    if isinstance(model, type):
-        return isinstance(model, VllmModelForPooling)
-
     return isinstance(model, VllmModelForPooling)
