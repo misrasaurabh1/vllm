@@ -10,6 +10,7 @@ import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.scalar_type import ScalarType
+from functools import lru_cache
 
 logger = init_logger(__name__)
 
@@ -658,6 +659,7 @@ def cutlass_scaled_fp4_mm(a: torch.Tensor, b: torch.Tensor,
     return out
 
 
+@lru_cache(maxsize=8)  # Assuming few distinct device capabilities in practice.
 def cutlass_scaled_mm_supports_fp8(cuda_device_capability: int) -> bool:
     return torch.ops._C.cutlass_scaled_mm_supports_fp8(cuda_device_capability)
 
